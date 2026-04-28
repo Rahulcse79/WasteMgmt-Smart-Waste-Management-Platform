@@ -6,25 +6,27 @@ import { AuditService } from '../services/audit.service.js';
 import { EmailService } from '../services/email.service.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validate.js';
+import { passwordSchema } from '../utils/passwordPolicy.js';
+import { wsHub } from '../services/ws.service.js';
 import { config } from '../config.js';
 
 const CreateUserSchema = z.object({
-  username: z.string().min(2),
-  password: z.string().min(4),
+  username: z.string().trim().min(2).max(64).regex(/^[a-z0-9_.-]+$/i, 'invalid_username'),
+  password: passwordSchema,
   role: z.enum(['admin', 'user']),
   email: z.string().email().optional(),
-  assignedDustbins: z.array(z.string()).optional(),
+  assignedDustbins: z.array(z.string()).max(2000).optional(),
 });
 
 const UpdateUserSchema = z.object({
   email: z.string().email().optional(),
   role: z.enum(['admin', 'user']).optional(),
-  assignedDustbins: z.array(z.string()).optional(),
+  assignedDustbins: z.array(z.string()).max(2000).optional(),
   isActive: z.boolean().optional(),
 });
 
 const ResetPwdSchema = z.object({
-  newPassword: z.string().min(4).optional(),
+  newPassword: passwordSchema.optional(),
 });
 
 export async function userRoutes(app: FastifyInstance): Promise<void> {
@@ -84,6 +86,10 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
         .select('-passwordHash -refreshTokenHash')
         .lean();
       if (!u) return reply.code(404).send({ error: 'not found' });
+      // Live-refresh dustbin scoping for any active WS sessions for this user.
+      if (body.assignedDustbins !== undefined) {
+        wsHub.refreshAssignment(req.params.id, body.assignedDustbins);
+      }
       await AuditService.log({
         actor: req.user,
         action: 'USER_UPDATE',

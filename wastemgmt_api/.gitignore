@@ -1,8 +1,21 @@
-node_modules
-dist
+node_modules/
+dist/
+coverage/
+
+# Env / secrets
 .env
-.env.local
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Logs
+logs/
 *.log
+*.log.*
+
+# Build/IDE
+.vscode/
 .DS_Store
-coverage
-.vscode
+*.tsbuildinfo

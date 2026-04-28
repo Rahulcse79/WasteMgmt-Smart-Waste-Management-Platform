@@ -56,14 +56,37 @@ const schema = z.object({
   SMTP_FROM: z.string().default('no-reply@example.com'),
   ALERT_EMAIL_TO: z.string().default(''),
 
-  CAMERA_STREAM_1: z.string().default(''),
-  CAMERA_STREAM_2: z.string().default(''),
-
   REDIS_ENABLED: envBool(false),
   REDIS_URL: z.string().default('redis://localhost:6379'),
 
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(600),
   RATE_LIMIT_WINDOW: z.string().default('1 minute'),
+
+  // ── Logging ────────────────────────────────────────────────────────────
+  // Where rotated log files are written. Empty disables file logging.
+  LOG_DIR: z.string().default('logs'),
+  LOG_FILE: z.string().default('app.log'),
+  // pino-roll: max size before rolling (e.g. "10m", "1g"). Empty = no size cap.
+  LOG_MAX_SIZE: z.string().default('10m'),
+  // pino-roll: how many rolled files to keep. 0 = unlimited.
+  LOG_MAX_FILES: z.coerce.number().int().nonnegative().default(5),
+  // Structured JSON output (production-friendly). When false, pino-pretty is used.
+  LOG_JSON: envBool(false),
+  LOG_COLORIZE: envBool(true),
+  LOG_TIMESTAMP: envBool(true),
+  LOG_PRETTY_PRINT: envBool(true),
+  LOG_SILENT: envBool(false),
+  LOG_EXCEPTION_HANDLERS: envBool(true),
+  LOG_REJECTION_HANDLERS: envBool(true),
+  LOG_EXIT_ON_ERROR: envBool(false),
+  // Mirror logs to stdout in addition to the rotated file. Recommended on.
+  LOG_TO_STDOUT: envBool(true),
+
+  // Strict password policy toggle (enforces ≥12 chars + symbol).
+  STRICT_PASSWORD_POLICY: envBool(false),
+
+  CAMERA_STREAM_1: z.string().default(''),
+  CAMERA_STREAM_2: z.string().default(''),
 });
 
 const parsed = schema.safeParse(process.env);

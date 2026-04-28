@@ -16,9 +16,16 @@ import { configRoutes } from './routes/config.routes.js';
 import { rulesRoutes } from './routes/rules.routes.js';
 import { healthRoutes } from './routes/health.routes.js';
 import { ingestRoutes } from './routes/ingest.routes.js';
+import { citizenRoutes } from './routes/citizen.routes.js';
+import { notificationRoutes } from './routes/notifications.routes.js';
+import { routeRoutes } from './routes/route.routes.js';
+import { exportRoutes } from './routes/export.routes.js';
+import { analyticsRoutes } from './routes/analytics.routes.js';
+import { sensorReadingsRoutes } from './routes/sensorReadings.routes.js';
 import { MqttService } from './services/mqtt.service.js';
 import { HeartbeatService } from './services/heartbeat.service.js';
 import { wsHub } from './services/ws.service.js';
+import { UserModel } from './models/User.js';
 import { runSeed } from './seed.js';
 
 async function buildServer() {
@@ -57,9 +64,15 @@ async function buildServer() {
   await app.register(configRoutes);
   await app.register(rulesRoutes);
   await app.register(ingestRoutes);
+  await app.register(citizenRoutes);
+  await app.register(notificationRoutes);
+  await app.register(routeRoutes);
+  await app.register(exportRoutes);
+  await app.register(analyticsRoutes);
+  await app.register(sensorReadingsRoutes);
 
-  // ── WebSocket: /ws?token=<accessToken>&topics=dustbin:*,alerts ──────────
-  app.get('/ws', { websocket: true }, (socket, req) => {
+  // ── WebSocket gateway ──────────────────────────────────────────────────
+  app.get('/ws', { websocket: true }, async (socket, req) => {
     const url = new URL(req.url ?? '/ws', 'http://localhost');
     const token = url.searchParams.get('token');
     const topicsParam = url.searchParams.get('topics') ?? '*';
@@ -78,14 +91,40 @@ async function buildServer() {
         socket.close(1008, 'bad token type');
         return;
       }
+      // Look up the per-user dustbin scope so we can enforce it on every send.
+      let allowed: Set<string> | undefined;
+      if (decoded.role !== 'admin') {
+        const u = await UserModel.findById(decoded.sub).select('assignedDustbins isActive').lean();
+        if (!u || !u.isActive) {
+          socket.close(1008, 'inactive');
+          return;
+        }
+        allowed = new Set(u.assignedDustbins ?? []);
+      }
       const sub = {
         socket,
         user: { sub: decoded.sub, username: decoded.username, role: decoded.role, type: 'access' as const },
         topics: new Set(topicsParam.split(',').map((t) => t.trim()).filter(Boolean)),
+        allowedDustbins: allowed,
       };
       wsHub.add(sub);
       socket.on('close', () => wsHub.remove(sub));
+      // Cap message rate from clients (protects the hub from chatty/abusive sockets).
+      let recentMsgs = 0;
+      const recentReset = setInterval(() => {
+        recentMsgs = 0;
+      }, 1000);
+      socket.on('close', () => clearInterval(recentReset));
       socket.on('message', (raw) => {
+        recentMsgs++;
+        if (recentMsgs > 60) {
+          socket.close(1008, 'rate_limit');
+          return;
+        }
+        if ((raw as Buffer).length > 8 * 1024) {
+          socket.close(1009, 'message_too_large');
+          return;
+        }
         try {
           const msg = JSON.parse(String(raw)) as { action?: string; topics?: string[] };
           if (msg.action === 'subscribe' && Array.isArray(msg.topics)) {
@@ -97,7 +136,12 @@ async function buildServer() {
           /* ignore malformed */
         }
       });
-      socket.send(JSON.stringify({ event: 'hello', payload: { user: decoded.username } }));
+      socket.send(
+        JSON.stringify({
+          event: 'hello',
+          payload: { user: decoded.username, role: decoded.role },
+        })
+      );
     } catch {
       socket.close(1008, 'invalid token');
     }

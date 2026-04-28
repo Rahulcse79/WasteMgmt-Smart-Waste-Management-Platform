@@ -8,6 +8,9 @@ import { UserModel } from '../models/User.js';
 import { decryptPayload } from '../utils/crypto.js';
 import { validateBody } from '../middleware/validate.js';
 import { requireAuth } from '../middleware/auth.js';
+import { passwordSchema } from '../utils/passwordPolicy.js';
+import jwt from 'jsonwebtoken';
+import { randomUUID } from 'node:crypto';
 
 const LoginSchema = z.object({
   username: z.string().min(1).optional(),
@@ -62,9 +65,10 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         { sub: user.id, username: user.username, role: user.role, type: 'access' },
         { sign: { expiresIn: config.JWT_ACCESS_TTL, key: config.JWT_ACCESS_SECRET } }
       );
-      const refreshToken = await reply.jwtSign(
+      const refreshToken = jwt.sign(
         { sub: user.id, username: user.username, role: user.role, type: 'refresh' },
-        { sign: { expiresIn: config.JWT_REFRESH_TTL, key: config.JWT_REFRESH_SECRET } }
+        config.JWT_REFRESH_SECRET,
+        { expiresIn: config.JWT_REFRESH_TTL as jwt.SignOptions['expiresIn'], jwtid: randomUUID() }
       );
       await AuthService.setRefreshToken(user.id, refreshToken);
 
@@ -96,10 +100,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const { refreshToken } = req.body as z.infer<typeof RefreshSchema>;
       try {
-        const decoded = await app.jwt.verify<{ sub: string; username: string; role: 'admin' | 'user'; type: string }>(
-          refreshToken,
-          { key: config.JWT_REFRESH_SECRET } as never
-        );
+        const decoded = jwt.verify(refreshToken, config.JWT_REFRESH_SECRET) as { sub: string; username: string; role: 'admin' | 'user'; type: string };
         if (decoded.type !== 'refresh') return reply.code(401).send({ error: 'Bad token type' });
         const matches = await AuthService.refreshTokenMatches(decoded.sub, refreshToken);
         if (!matches) return reply.code(401).send({ error: 'Refresh token revoked' });
@@ -108,9 +109,10 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           { sub: decoded.sub, username: decoded.username, role: decoded.role, type: 'access' },
           { sign: { expiresIn: config.JWT_ACCESS_TTL, key: config.JWT_ACCESS_SECRET } }
         );
-        const newRefresh = await reply.jwtSign(
+        const newRefresh = jwt.sign(
           { sub: decoded.sub, username: decoded.username, role: decoded.role, type: 'refresh' },
-          { sign: { expiresIn: config.JWT_REFRESH_TTL, key: config.JWT_REFRESH_SECRET } }
+          config.JWT_REFRESH_SECRET,
+          { expiresIn: config.JWT_REFRESH_TTL as jwt.SignOptions['expiresIn'], jwtid: randomUUID() }
         );
         await AuthService.setRefreshToken(decoded.sub, newRefresh);
 
@@ -164,7 +166,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
   const ChangePwdSchema = z.object({
     currentPassword: z.string().min(1),
-    newPassword: z.string().min(4),
+    newPassword: passwordSchema,
   });
   app.post(
     '/auth/me/password',
