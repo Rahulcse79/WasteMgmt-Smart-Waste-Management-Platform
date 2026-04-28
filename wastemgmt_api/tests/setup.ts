@@ -27,7 +27,11 @@ process.env.SEED_USER_PASSWORD = 'TestUser#2026';
 let mongo: MongoMemoryServer | undefined;
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
+  // Bump start timeout — slow first-spawn on macOS / cold caches occasionally
+  // exceeds the default 10s and produces flaky "Instance failed to start" errors.
+  mongo = await MongoMemoryServer.create({
+    instance: { launchTimeout: 60_000 },
+  });
   await mongoose.connect(mongo.getUri());
 });
 

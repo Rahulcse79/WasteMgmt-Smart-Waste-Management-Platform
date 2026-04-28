@@ -135,27 +135,96 @@ Each reading is:
 
 ## 🔌 REST API (selected)
 
-| Method | Path | Auth |
-| --- | --- | --- |
-| `POST` | `/auth/login` | public |
-| `POST` | `/auth/refresh` | public |
-| `POST` | `/auth/logout` | bearer |
-| `GET`  | `/auth/me` | bearer |
-| `GET`  | `/dustbins` | bearer (scoped by role) |
-| `GET`  | `/dustbins/:id` | bearer |
-| `GET`  | `/dustbins/:id/predict` | bearer |
-| `POST` `PUT` `DELETE` | `/dustbins[/:id]` | admin |
-| `GET`  `POST` `DELETE` | `/users[/:id]` | admin |
-| `POST` | `/users/:id/reset-password` | admin |
-| `GET`  | `/alerts` | bearer |
-| `POST` | `/alerts/:id/ack` | bearer |
-| `GET`  | `/audit` | admin |
-| `GET`  | `/config/public` | bearer |
-| `GET`  `PUT` | `/config` | admin |
-| `GET`  `POST` `PUT` `DELETE` | `/rules[/:id]` | admin |
-| `POST` | `/ingest` | admin (manual / test) |
-| `GET`  | `/health` · `/health/ready` | public |
-| `WS`   | `/ws?token=&topics=` | bearer |
+| Method | Path | Auth | Notes |
+| --- | --- | --- | --- |
+| `POST` | `/auth/login` | public | encrypted payload supported |
+| `POST` | `/auth/refresh` | public | one-shot rotation, server stores only the hash |
+| `POST` | `/auth/logout` | bearer | revokes the active refresh token |
+| `GET`  | `/auth/me` | bearer | |
+| `PATCH` | `/auth/me` | bearer | update email |
+| `POST` | `/auth/password` | bearer | self-service password change (policy enforced) |
+| `GET`  | `/dustbins` | bearer | scoped by `assignedDustbins` for non-admins |
+| `GET`  | `/dustbins/:id` | bearer | |
+| `GET`  | `/dustbins/:id/predict` | bearer | linear-regression bin-full ETA |
+| `POST` `PUT` `DELETE` | `/dustbins[/:id]` | admin | |
+| `GET`  `POST` `DELETE` | `/users[/:id]` | admin | |
+| `POST` | `/users/:id/reset-password` | admin | |
+| `GET`  | `/alerts` | bearer | filters: severity, status |
+| `POST` | `/alerts/:id/ack` | bearer | |
+| `GET`  | `/audit` | admin | |
+| `GET`  | `/config/public` | bearer | dynamic feature flags + camera list |
+| `GET`  `PUT` | `/config` | admin | runtime-editable settings store |
+| `GET`  `POST` `PUT` `DELETE` | `/rules[/:id]` | admin | |
+| `POST` | `/ingest` | admin | manual / test ingestion |
+| `GET`  | `/sensor-readings` | bearer | **cursor-paginated**, filter by bin/metric/date |
+| `GET`  | `/sensor-readings/recent` | bearer | top-N newest (default 10, max 200) |
+| `GET`  | `/sensor-readings/by-bin/:dustbinId` | bearer | scope-checked single-bin history |
+| `GET`  | `/analytics/dashboard` | bearer | KPIs + zone breakdown + fill buckets |
+| `POST` | `/routes/optimize` | bearer | nearest-neighbour collection route |
+| `GET`  | `/notifications` | bearer | |
+| `POST` | `/notifications/:id/read` | bearer | |
+| `POST` | `/public/citizen-reports` | public | citizen-submitted issues |
+| `GET`  `POST` | `/citizen-reports[/:id]` | bearer | admin moderation |
+| `GET`  | `/export/dustbins.csv` · `alerts.csv` · `readings.csv` | bearer | CSV streaming |
+| `GET`  | `/health` · `/health/ready` | public | |
+| `WS`   | `/ws?token=&topics=` | bearer | per-topic subscribe/unsubscribe, rate-limited |
+
+### Cursor pagination (sensor readings)
+
+`GET /sensor-readings` returns:
+
+```json
+{
+  "items":      [{ "id":"…", "dustbinId":"…", "metric":"depth", "value":72, "timestamp":"…" }],
+  "pageSize":   10,
+  "nextCursor": "2026-04-29T01:55:14.221Z_66230b2bf0f6e8a20a1f5b91"
+}
+```
+
+Pass `?cursor=<nextCursor>` to fetch the next page. The cursor is keyset-based
+(`timestamp + _id`) so paging stays **O(log n)** even on a 30k-bin archive
+without `skip`/`offset` cost. Filters: `dustbinId`, `dustbinIds=a,b,c`,
+`metric=depth|gas|humidity|temperature`, `from`, `to` (ISO datetimes),
+`limit` (≤ 200).
+
+### Dynamic camera streams
+
+The Admin → Cameras page is a thin CRUD over `/config` (`cameras[]`). Add /
+remove HLS / MJPEG / RTSP / iframe URLs at runtime — the surveillance page
+re-renders without a redeploy. Citizens never see camera URLs (admin-only
+section, scoped iframes).
+
+---
+
+## 🪵 Logging
+
+Structured JSON logs powered by **pino** with multiplexed sinks:
+
+- **stdout** — pretty-printed in dev, JSON in prod
+- **`logs/<LOG_FILE>`** — JSON, rotated daily and by size, retention enforced
+
+Configurable via env (defaults shown):
+
+```
+LOG_LEVEL=info                # trace|debug|info|warn|error|fatal|silent
+LOG_DIR=logs
+LOG_FILE=app.log
+LOG_MAX_SIZE=10m              # rotate per-file size
+LOG_MAX_FILES=5               # rotated-file retention count
+LOG_JSON=false                # force JSON to stdout (overrides pretty)
+LOG_COLORIZE=true
+LOG_TIMESTAMP=true            # ISO time in every record
+LOG_PRETTY_PRINT=true         # pino-pretty for stdout in dev
+LOG_TO_STDOUT=true
+LOG_SILENT=false
+LOG_EXCEPTION_HANDLERS=true   # log uncaughtException
+LOG_REJECTION_HANDLERS=true   # log unhandledRejection
+LOG_EXIT_ON_ERROR=false
+```
+
+Auth tokens, cookies, passwords and refresh tokens are **redacted** from every
+record (`[redacted]`). Errors logged via `logger.error({ err }, …)` are
+auto-serialized to `{ type, message, stack }`.
 
 ---
 
@@ -164,28 +233,50 @@ Each reading is:
 - HTTPS termination + HSTS, X-Frame-Options, Referrer-Policy, Permissions-Policy via nginx.
 - `@fastify/helmet`, CORS allow-list, `@fastify/rate-limit` (default 600 req / IP / min).
 - Zod schemas validate every body and query.
-- Bcrypt cost-12 password hashing.
-- JWT access (15 m) + rotating refresh (7 d) — only the **hash** of the active refresh token is stored server-side.
+- Bcrypt cost-12 password hashing + optional `STRICT_PASSWORD_POLICY` (length, classes, deny-list).
+- JWT access (15 m) + **rotating** refresh (7 d) with per-token `jti` — only the **hash** of the active refresh token is stored server-side.
 - Optional AES-256-GCM payload encryption for sensitive POST bodies (e.g. login).
 - Surveillance iframes are sandboxed (`allow-same-origin allow-scripts allow-presentation`).
 - Audit logs capture every privileged mutation (actor, IP, UA, diff).
+- Log redaction prevents secret leakage to disk / stdout.
 
 ---
 
 ## 📈 Scalability
 
-- **MongoDB**: time-series collection for sensor archive; bounded arrays on
-  the hot `Dustbin` doc for dashboard reads; secondary indexes on
-  `dustbinId`, `tenantId`, geospatial coords, alert acknowledgement.
+- **MongoDB**: time-series collection for sensor archive (90-day TTL,
+  `granularity: 'minutes'`); bounded arrays on the hot `Dustbin` doc for
+  dashboard reads; secondary indexes on `dustbinId`, `tenantId`, geospatial
+  coords, alert acknowledgement.
+- **Cursor-paginated telemetry**: `/sensor-readings` never fetches the whole
+  collection — keyset cursor + `limit` (≤ 200) keeps reads bounded even with
+  30k bins emitting every minute. The dashboard polls `/recent` for the live
+  10-row top, then upgrades to filter-mode (single shot, prev/next) when the
+  user picks a bin / date range.
 - **Stateless API**: refresh token state is the *only* server-side login
   state — horizontally scale Fastify behind nginx / k8s HPA.
 - **Multi-tenant ready**: every collection carries `tenantId` (default
   `default`) so one cluster can serve many cities.
 - **Realtime fan-out**: in-process WS hub today; swap to Redis pub/sub by
   flipping `REDIS_ENABLED=true` and dropping a few lines into `ws.service.ts`
-  to broadcast across replicas.
+  to broadcast across replicas. WS messages are spliced into the live table
+  the moment they arrive — no extra HTTP round-trip.
 - **Offline / store-and-forward**: ingestion path is idempotent — devices
   may batch and re-publish on reconnect.
+
+---
+
+## 🧪 Tests
+
+```bash
+cd wastemgmt_api
+npm test                  # vitest run, ~100 tests, in-memory MongoDB
+npm run test:coverage     # v8 coverage report
+```
+
+Coverage areas: auth (login/refresh rotation/logout/me), users, dustbins,
+sensor readings, citizen reports, notifications, exports, analytics, route
+optimization, password policy, AES-GCM crypto, WebSocket hub.
 
 ---
 
