@@ -113,15 +113,21 @@ export const API_BASE = API_URL;
 // the rest of the UI uses one consistent import path: `import { reports } …`.
 
 export interface DashboardKpis {
-  total: number;
-  online: number;
-  offline: number;
-  avgFill: number;
-  openAlerts: number;
-  openReports: number;
-  fillBuckets: { '0-25': number; '25-50': number; '50-75': number; '75-90': number; '90-100': number };
-  topFull: Array<{ dustbinId: string; dustbinName: string; depth: number; zone: string }>;
+  totals: {
+    dustbins: number;
+    online: number;
+    offline: number;
+    critical: number;
+    warning: number;
+    healthy: number;
+    avgFill: number;
+    openAlerts: number;
+    citizenReportsOpen: number;
+  };
+  fillBuckets: Array<{ bucket: "0-25" | "25-50" | "50-75" | "75-90" | "90-100"; count: number }>;
+  topFull: Array<{ dustbinId: string; dustbinName: string; fill: number; zone?: string }>;
   zones: Array<{ zone: string; count: number; avgFill: number; critical: number }>;
+  recentAlerts: number;
 }
 
 export interface OptimizedRoute {
@@ -162,7 +168,7 @@ export interface CitizenReport {
 export const analytics = {
   dashboard: () => api.get<DashboardKpis>('/analytics/dashboard').then((r) => r.data),
   fillTrend: (id: string, hours = 24) =>
-    api.get<{ dustbinId: string; hours: number; series: Array<{ t: string; v: number }> }>(
+    api.get<{ dustbinId: string; hours: number; points: Array<{ ts: string; value: number }> }>(
       `/analytics/dustbins/${encodeURIComponent(id)}/fill-trend`,
       { params: { hours } }
     ).then((r) => r.data),

@@ -2,8 +2,9 @@ import { DustbinModel } from '../models/Dustbin.js';
 import { AlertService } from './alert.service.js';
 import { wsHub } from './ws.service.js';
 import { logger } from '../logger.js';
+import { config } from '../config.js';
 
-const OFFLINE_AFTER_MS = 5 * 60 * 1000; // 5 min without a reading -> offline
+const OFFLINE_AFTER_MS = config.OFFLINE_AFTER_MS;
 let timer: NodeJS.Timeout | null = null;
 
 export const HeartbeatService = {
@@ -32,7 +33,7 @@ export const HeartbeatService = {
         dustbinId: s.dustbinId,
         type: 'OFFLINE',
         severity: 'warning',
-        message: `Device ${s.dustbinId} stopped reporting (no data for >5m)`,
+        message: `Device ${s.dustbinId} stopped reporting (no data for >${Math.round(OFFLINE_AFTER_MS / 60000)}m)`,
         tenantId: s.tenantId,
       });
       wsHub.broadcast(`dustbin:${s.dustbinId}`, 'offline', { dustbinId: s.dustbinId });

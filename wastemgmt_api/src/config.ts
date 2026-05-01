@@ -62,6 +62,8 @@ const schema = z.object({
   MQTT_CLIENT_KEY: z.string().optional(),
   MQTT_REJECT_UNAUTHORIZED: envBool(true),
 
+  OFFLINE_AFTER_MS: z.coerce.number().int().positive().default(10 * 60 * 1000),
+
   SMTP_HOST: z.string().default(''),
   SMTP_PORT: z.coerce.number().int().positive().default(587),
   SMTP_SECURE: envBool(false),

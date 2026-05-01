@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import { MapContainer, Marker, Popup, TileLayer, useMap } from "react-leaflet";
 import type { Dustbin } from "@/lib/types";
@@ -33,14 +33,40 @@ export function MapView({
   height?: number;
   center?: [number, number];
 }): React.ReactElement {
+  const [mounted, setMounted] = useState(false);
+  const mapRef = useRef<L.Map | null>(null);
+  const mapKey = useMemo(() => `wm-map-${Math.random().toString(36).slice(2)}`, []);
+  const setMapRef = useCallback((map: L.Map | null) => {
+    mapRef.current = map;
+  }, []);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    // React strict-mode + fast refresh can double-mount map containers in dev.
+    // Explicitly removing the old instance avoids "container reused" crashes.
+    return () => {
+      mapRef.current?.remove();
+      mapRef.current = null;
+    };
+  }, []);
+
   const initialCenter = useMemo<[number, number]>(() => {
     if (center) return center;
     if (dustbins[0]) return [dustbins[0].latitude, dustbins[0].longitude];
     return [21.1458, 79.0882]; // Nagpur fallback
   }, [center, dustbins]);
 
+  if (!mounted) {
+    return <div style={{ height, width: "100%", borderRadius: 12 }} />;
+  }
+
   return (
     <MapContainer
+      key={mapKey}
+      ref={setMapRef}
       center={initialCenter}
       zoom={12}
       style={{ height, width: "100%", borderRadius: 12 }}

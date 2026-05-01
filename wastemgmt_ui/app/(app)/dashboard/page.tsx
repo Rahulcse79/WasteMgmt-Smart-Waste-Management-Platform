@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { analytics, api, type DashboardKpis } from "@/lib/api";
 import { useLiveSocket } from "@/lib/socket";
-import { latestOf, type Dustbin } from "@/lib/types";
+import { isDustbinActive, latestOf, type Dustbin } from "@/lib/types";
 import { useT } from "@/lib/i18n";
 import { EyeIcon, BellIcon, TrashIcon } from "@/components/Icons";
 import { ChartIcon, TruckIcon, CheckIcon } from "@/components/IconsExtended";
@@ -32,6 +32,10 @@ function fillTone(d?: number) {
   if (d >= 80) return "danger" as const;
   if (d >= 50) return "warning" as const;
   return "success" as const;
+}
+
+function isActive(d: Dustbin): boolean {
+  return isDustbinActive({ lastSeenAt: d.lastSeenAt, online: d.online });
 }
 
 export default function DashboardPage(): React.ReactElement {
@@ -87,7 +91,7 @@ export default function DashboardPage(): React.ReactElement {
       if (filter === "critical" && !(depth != null && depth >= 80)) return false;
       if (filter === "warning"  && !(depth != null && depth >= 50 && depth < 80)) return false;
       if (filter === "healthy"  && !(depth != null && depth < 50)) return false;
-      if (filter === "offline"  && d.online !== false) return false;
+      if (filter === "offline"  && isActive(d)) return false;
       if (q) {
         const needle = q.toLowerCase();
         const hay = `${d.dustbinId} ${d.dustbinName} ${d.zone ?? ""}`.toLowerCase();
@@ -101,7 +105,7 @@ export default function DashboardPage(): React.ReactElement {
     let critical = 0, warning = 0, healthy = 0, offline = 0;
     for (const d of items) {
       const v = latestOf(d.depth, d.latest?.depth);
-      if (d.online === false) offline++;
+      if (!isActive(d)) offline++;
       if (v == null) continue;
       if (v >= 80) critical++;
       else if (v >= 50) warning++;
@@ -131,11 +135,11 @@ export default function DashboardPage(): React.ReactElement {
       {/* KPI strip */}
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
         <KpiTile label={t("kpi.totalBins")} value={loading ? "—" : items.length} icon={<TrashIcon />} loading={loading} />
-        <KpiTile label={t("kpi.online")} value={loading ? "—" : (kpis ? kpis.online : items.filter((d) => d.online !== false).length)} tone="success" icon={<CheckIcon />} loading={loading} />
+        <KpiTile label={t("kpi.online")} value={loading ? "—" : items.filter((d) => isActive(d)).length} tone="success" icon={<CheckIcon />} loading={loading} />
         <KpiTile label={t("kpi.critical")} value={counts.critical} tone="danger" icon={<BellIcon />} loading={loading} />
         <KpiTile label={t("kpi.warning")} value={counts.warning} tone="warning" loading={loading} />
-        <KpiTile label={t("kpi.avgFill")} value={loading ? "—" : `${(Number(kpis?.avgFill ?? averageFill(items)) || 0).toFixed(0)} %`} tone="info" loading={loading} />
-        <KpiTile label={t("kpi.openAlerts")} value={kpis?.openAlerts ?? 0} tone="danger" loading={loading} />
+        <KpiTile label={t("kpi.avgFill")} value={loading ? "—" : `${(Number(kpis?.totals.avgFill ?? averageFill(items)) || 0).toFixed(0)} %`} tone="info" loading={loading} />
+        <KpiTile label={t("kpi.openAlerts")} value={kpis?.totals.openAlerts ?? 0} tone="danger" loading={loading} />
       </div>
 
       {/* Map */}
@@ -233,7 +237,7 @@ export default function DashboardPage(): React.ReactElement {
                       <td className="px-4 py-3 text-center tabular-nums">{hum != null ? `${hum.toFixed(0)}%` : "—"}</td>
                       <td className="px-4 py-3 text-center tabular-nums">{gas != null ? `${gas.toFixed(0)}` : "—"}</td>
                       <td className="px-4 py-3 text-center">
-                        {d.online === false ? (
+                        {!isActive(d) ? (
                           <Chip tone="danger">Offline</Chip>
                         ) : (
                           <Chip tone={fillTone(depth)}>

@@ -150,7 +150,7 @@ export default function LoginPage(): React.ReactElement {
             className="relative h-12 w-12 rounded-2xl overflow-hidden flex items-center justify-center shadow-lg ring-grad"
             style={{ background: "var(--accent-coral)" }}
           >
-            <Image src="/logo.png" alt="Coral Telecom" width={48} height={48} className="logo-img object-contain p-1.5" priority />
+            <Image src="/logo.jpeg" alt="Coral Telecom" width={48} height={48} className="logo-img object-contain p-1.5" priority />
           </div>
           <div>
             <div className="font-syne font-bold tracking-tight text-base" style={{ color: "var(--color-text-primary)" }}>
@@ -228,7 +228,7 @@ export default function LoginPage(): React.ReactElement {
             className="relative h-9 w-9 rounded-xl overflow-hidden flex items-center justify-center"
             style={{ background: "var(--accent-coral)" }}
           >
-            <Image src="/logo.png" alt="Coral Telecom" width={36} height={36} className="logo-img object-contain p-1" priority />
+            <Image src="/logo.jpeg" alt="Coral Telecom" width={36} height={36} className="logo-img object-contain p-1" priority />
           </div>
           <span className="font-syne font-bold text-sm" style={{ color: "var(--color-text-primary)" }}>Coral Telecom</span>
         </div>
@@ -254,7 +254,7 @@ export default function LoginPage(): React.ReactElement {
               className="relative h-14 w-14 rounded-2xl overflow-hidden mb-3 flex items-center justify-center shadow-lg"
               style={{ background: "var(--accent-coral)" }}
             >
-              <Image src="/logo.png" alt="Coral Telecom" width={56} height={56} className="logo-img object-contain p-2" />
+              <Image src="/logo.jpeg" alt="Coral Telecom" width={56} height={56} className="logo-img object-contain p-2" />
             </div>
             <h2 className="font-syne font-bold text-2xl tracking-tight" style={{ color: "var(--color-text-primary)" }}>
               {t("login.title")}

@@ -279,22 +279,27 @@ export function LiveSensorTable({
                 </td>
               </tr>
             ) : (
-              items.map((r) => (
-                <tr key={r.id} className="hover:bg-white/[0.03]">
-                  <td className="px-4 py-2 whitespace-nowrap" style={{ color: "var(--fg-muted)" }}>
-                    {new Date(r.timestamp).toLocaleString()}
-                  </td>
-                  <td className="px-4 py-2 font-mono text-xs">{r.dustbinId}</td>
-                  <td className="px-4 py-2 capitalize">{r.metric}</td>
-                  <td className="px-4 py-2 text-right tabular-nums font-semibold">
-                    {r.value.toFixed(r.metric === "temperature" || r.metric === "humidity" ? 1 : 0)}
-                    <span style={{ color: "var(--fg-muted)" }}>{METRIC_UNIT[r.metric]}</span>
-                  </td>
-                  <td className="px-4 py-2 text-center">
-                    <Chip tone={metricTone(r.metric, r.value)}>{metricTone(r.metric, r.value)}</Chip>
-                  </td>
-                </tr>
-              ))
+              <>
+                {items.map((r, idx) => {
+                  const rowKey = `${r.id || r.dustbinId}-${r.metric}-${r.timestamp}-${idx}`;
+                  return (
+                    <tr key={rowKey} className="hover:bg-white/[0.03]">
+                      <td className="px-4 py-2 whitespace-nowrap" style={{ color: "var(--fg-muted)" }}>
+                        {new Date(r.timestamp).toLocaleString()}
+                      </td>
+                      <td className="px-4 py-2 font-mono text-xs">{r.dustbinId}</td>
+                      <td className="px-4 py-2 capitalize">{r.metric}</td>
+                      <td className="px-4 py-2 text-right tabular-nums font-semibold">
+                        {r.value.toFixed(r.metric === "temperature" || r.metric === "humidity" ? 1 : 0)}
+                        <span style={{ color: "var(--fg-muted)" }}>{METRIC_UNIT[r.metric]}</span>
+                      </td>
+                      <td className="px-4 py-2 text-center">
+                        <Chip tone={metricTone(r.metric, r.value)}>{metricTone(r.metric, r.value)}</Chip>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </>
             )}
           </tbody>
         </table>

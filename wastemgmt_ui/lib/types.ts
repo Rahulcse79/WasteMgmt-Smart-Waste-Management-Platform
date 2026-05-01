@@ -28,6 +28,22 @@ export interface Dustbin {
   updatedAt?: string;
 }
 
+export const ACTIVE_WINDOW_MS = 10 * 60 * 1000;
+
+/**
+ * A dustbin is active when it has emitted data within the recent activity window.
+ * Falls back to backend `online` when `lastSeenAt` is absent.
+ */
+export function isDustbinActive(d: Pick<Dustbin, "lastSeenAt" | "online">, nowMs = Date.now()): boolean {
+  if (d.lastSeenAt) {
+    const seenAt = new Date(d.lastSeenAt).getTime();
+    if (Number.isFinite(seenAt)) {
+      return nowMs - seenAt <= ACTIVE_WINDOW_MS;
+    }
+  }
+  return d.online !== false;
+}
+
 export interface Alert {
   _id: string;
   dustbinId: string;

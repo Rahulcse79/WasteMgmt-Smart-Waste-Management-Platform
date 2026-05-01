@@ -124,7 +124,7 @@ export function Sidebar({
             className="relative h-10 w-10 rounded-xl overflow-hidden ring-grad grid place-items-center shadow-lg"
             style={{ background: "var(--accent-grad)" }}
           >
-            <Image src="/logo.png" alt="Coral Telecom" fill sizes="40px" className="logo-img object-contain p-1" priority />
+            <Image src="/logo.jpeg" alt="Coral Telecom" fill sizes="40px" className="logo-img object-contain p-1" priority />
           </div>
           {!collapsed ? (
             <div className="min-w-0">

@@ -37,12 +37,12 @@ export default function AnalyticsPage(): React.ReactElement {
       {err ? <Card><CardBody><div className="chip danger">{err}</div></CardBody></Card> : null}
 
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-        <KpiTile label={t("kpi.totalBins")} value={data?.total ?? "—"} loading={loading} />
-        <KpiTile label={t("kpi.online")} value={data?.online ?? "—"} tone="success" loading={loading} />
-        <KpiTile label="Offline" value={data?.offline ?? "—"} tone="danger" loading={loading} />
-        <KpiTile label={t("kpi.avgFill")} value={data ? `${(Number(data.avgFill) || 0).toFixed(0)} %` : "—"} tone="info" loading={loading} />
-        <KpiTile label={t("kpi.openAlerts")} value={data?.openAlerts ?? 0} tone="warning" loading={loading} />
-        <KpiTile label={t("kpi.openReports")} value={data?.openReports ?? 0} tone="info" loading={loading} />
+        <KpiTile label={t("kpi.totalBins")} value={data?.totals.dustbins ?? "—"} loading={loading} />
+        <KpiTile label={t("kpi.online")} value={data?.totals.online ?? "—"} tone="success" loading={loading} />
+        <KpiTile label="Offline" value={data?.totals.offline ?? "—"} tone="danger" loading={loading} />
+        <KpiTile label={t("kpi.avgFill")} value={data ? `${(Number(data.totals.avgFill) || 0).toFixed(0)} %` : "—"} tone="info" loading={loading} />
+        <KpiTile label={t("kpi.openAlerts")} value={data?.totals.openAlerts ?? 0} tone="warning" loading={loading} />
+        <KpiTile label={t("kpi.openReports")} value={data?.totals.citizenReportsOpen ?? 0} tone="info" loading={loading} />
       </div>
 
       <div className="grid lg:grid-cols-2 gap-4">
@@ -63,8 +63,8 @@ export default function AnalyticsPage(): React.ReactElement {
                     <div className="text-sm font-medium truncate">{b.dustbinName}</div>
                     <div className="text-[11px] font-mono" style={{ color: "var(--fg-subtle)" }}>{b.dustbinId} · {b.zone}</div>
                   </div>
-                  <div className="w-32"><FillBar value={b.depth} /></div>
-                  <div className="w-12 text-right tabular-nums font-semibold">{b.depth.toFixed(0)}%</div>
+                  <div className="w-32"><FillBar value={b.fill} /></div>
+                  <div className="w-12 text-right tabular-nums font-semibold">{b.fill.toFixed(0)}%</div>
                 </div>
               )) : <EmptyState title="No bins" icon={<ChartIcon />} />
             }
@@ -112,18 +112,20 @@ export default function AnalyticsPage(): React.ReactElement {
 }
 
 function FillBuckets({ data }: { data: DashboardKpis }): React.ReactElement {
-  const buckets: Array<{ label: string; key: keyof DashboardKpis["fillBuckets"]; color: string }> = [
-    { label: "0-25%",  key: "0-25",   color: "var(--success)" },
-    { label: "25-50%", key: "25-50",  color: "var(--success)" },
-    { label: "50-75%", key: "50-75",  color: "var(--warning)" },
-    { label: "75-90%", key: "75-90",  color: "var(--warning)" },
-    { label: "90-100%",key: "90-100", color: "var(--danger)" },
+  const buckets: Array<{ label: string; key: "0-25" | "25-50" | "50-75" | "75-90" | "90-100"; color: string }> = [
+    { label: "0-25%", key: "0-25", color: "var(--success)" },
+    { label: "25-50%", key: "25-50", color: "var(--success)" },
+    { label: "50-75%", key: "50-75", color: "var(--warning)" },
+    { label: "75-90%", key: "75-90", color: "var(--warning)" },
+    { label: "90-100%", key: "90-100", color: "var(--danger)" },
   ];
-  const max = Math.max(1, ...buckets.map((b) => data.fillBuckets[b.key]));
+  const valueOf = (key: (typeof buckets)[number]["key"]): number =>
+    data.fillBuckets.find((b) => b.bucket === key)?.count ?? 0;
+  const max = Math.max(1, ...buckets.map((b) => valueOf(b.key)));
   return (
     <div className="space-y-3">
       {buckets.map((b) => {
-        const v = data.fillBuckets[b.key];
+        const v = valueOf(b.key);
         const pct = (v / max) * 100;
         return (
           <div key={b.key}>

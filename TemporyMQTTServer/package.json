@@ -1,0 +1,16 @@
+{
+  "name": "temporymqttserver",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "demo": "node index.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "MQTT demo data publisher for WasteMgmt platform",
+  "dependencies": {
+    "aedes": "^0.51.3",
+    "mqtt": "^5.14.1"
+  }
+}
