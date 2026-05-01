@@ -1,5 +1,19 @@
-import 'dotenv/config';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import dotenv from 'dotenv';
 import { z } from 'zod';
+
+// Load environment variables explicitly to avoid process-manager differences
+// where `dotenv/config` might miss `.env.local`.
+const envCandidates = [process.env.DOTENV_CONFIG_PATH, '.env.local', '.env'].filter(
+  (v): v is string => Boolean(v && v.trim())
+);
+for (const candidate of envCandidates) {
+  const envPath = resolve(process.cwd(), candidate);
+  if (!existsSync(envPath)) continue;
+  dotenv.config({ path: envPath });
+  break;
+}
 
 /** Parse "true"/"1"/"yes"/"on" → true; everything else → false. Avoids the
  *  `z.coerce.boolean()` pitfall where the string "false" coerces to true. */
