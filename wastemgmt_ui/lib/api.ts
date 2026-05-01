@@ -138,6 +138,39 @@ export interface OptimizedRoute {
   unreachable: number;
 }
 
+interface ApiOptimizedRoute {
+  depot: { latitude: number; longitude: number };
+  stops: Array<{
+    dustbinId: string;
+    dustbinName: string;
+    latitude: number;
+    longitude: number;
+    fill: number;
+    zone?: string;
+  }>;
+  distanceKm: number;
+  estDurationMin: number;
+  generatedAt: string;
+}
+
+function normalizeOptimizedRoute(route: ApiOptimizedRoute | OptimizedRoute): OptimizedRoute {
+  if ("ordered" in route) return route;
+  return {
+    ordered: route.stops.map((stop) => ({
+      dustbinId: stop.dustbinId,
+      dustbinName: stop.dustbinName,
+      lat: stop.latitude,
+      lng: stop.longitude,
+      depth: stop.fill,
+      zone: stop.zone ?? "",
+    })),
+    totalDistanceKm: route.distanceKm,
+    estimatedMinutes: route.estDurationMin,
+    startedAt: route.generatedAt,
+    unreachable: 0,
+  };
+}
+
 export interface NotificationItem {
   _id: string;
   title: string;
@@ -176,7 +209,17 @@ export const analytics = {
 
 export const routes = {
   optimize: (opts: { startLat: number; startLng: number; fillThreshold?: number; zone?: string; limit?: number; avgKmh?: number; serviceMinPerStop?: number }) =>
-    api.post<OptimizedRoute>('/routes/optimize', opts).then((r) => r.data),
+    api
+      .post<ApiOptimizedRoute | OptimizedRoute>('/routes/optimize', {
+        depotLat: opts.startLat,
+        depotLng: opts.startLng,
+        fillThreshold: opts.fillThreshold,
+        zone: opts.zone,
+        limit: opts.limit,
+        avgKmh: opts.avgKmh,
+        serviceMinPerStop: opts.serviceMinPerStop,
+      })
+      .then((r) => normalizeOptimizedRoute(r.data)),
 };
 
 export const notifications = {

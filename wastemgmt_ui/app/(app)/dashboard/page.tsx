@@ -43,17 +43,27 @@ export default function DashboardPage(): React.ReactElement {
   const [items, setItems] = useState<Dustbin[]>([]);
   const [loading, setLoading] = useState(true);
   const [kpis, setKpis] = useState<DashboardKpis | null>(null);
+  const [err, setErr] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "critical" | "warning" | "healthy" | "offline">("all");
   const [q, setQ] = useState("");
 
   const refresh = useCallback(async () => {
+    setLoading(true);
+    setErr(null);
     try {
-      const [bins, k] = await Promise.all([
+      const [binsResult, kpisResult] = await Promise.allSettled([
         api.get<Dustbin[]>("/dustbins").then((r) => r.data),
-        analytics.dashboard().catch(() => null),
+        analytics.dashboard(),
       ]);
-      setItems(bins);
-      setKpis(k);
+
+      if (binsResult.status === "fulfilled") {
+        setItems(binsResult.value);
+      } else {
+        const ex = binsResult.reason as { response?: { data?: { error?: string } }; message?: string };
+        setErr(ex?.response?.data?.error ?? ex?.message ?? "Failed to load dashboard data");
+      }
+
+      setKpis(kpisResult.status === "fulfilled" ? kpisResult.value : null);
     } finally {
       setLoading(false);
     }
@@ -131,6 +141,8 @@ export default function DashboardPage(): React.ReactElement {
           <Link href="/driver" className="btn btn-primary"><TruckIcon /> {t("nav.driver")}</Link>
         </div>
       </div>
+
+      {err ? <Card><CardBody><div className="chip danger">{err}</div></CardBody></Card> : null}
 
       {/* KPI strip */}
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
