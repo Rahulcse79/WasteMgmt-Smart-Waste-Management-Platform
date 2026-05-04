@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
+import compress from '@fastify/compress';
 import jwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
 import websocket from '@fastify/websocket';
@@ -37,6 +38,14 @@ async function buildServer() {
   });
 
   await app.register(helmet, { contentSecurityPolicy: false });
+  // Gzip/brotli for any JSON > 1KB. Cuts paginated list payloads ~70%, which
+  // dominates wall-clock for the dashboard. Skip for hijacked CSV streams
+  // (they set their own transfer-encoding: chunked).
+  await app.register(compress, {
+    global: true,
+    threshold: 1024,
+    encodings: ['br', 'gzip', 'deflate'],
+  });
   await app.register(cors, {
     origin: (origin, cb) => {
       if (!origin) return cb(null, true); // server-to-server, curl
@@ -86,6 +95,7 @@ async function buildServer() {
         username: string;
         role: 'admin' | 'user';
         type: string;
+        exp?: number;
       };
       if (decoded.type !== 'access') {
         socket.close(1008, 'bad token type');
@@ -108,7 +118,28 @@ async function buildServer() {
         allowedDustbins: allowed,
       };
       wsHub.add(sub);
-      socket.on('close', () => wsHub.remove(sub));
+      // Enforce token expiry. JWT verification only happens at connect time;
+      // without this a long-lived socket would survive past the token's `exp`,
+      // letting a revoked/expired credential keep streaming live data.
+      let expiryTimer: NodeJS.Timeout | undefined;
+      if (typeof decoded.exp === 'number') {
+        const msUntilExp = decoded.exp * 1000 - Date.now();
+        if (msUntilExp <= 0) {
+          socket.close(1008, 'token_expired');
+          return;
+        }
+        // Cap at ~24d to stay inside setTimeout's signed-32-bit ceiling.
+        expiryTimer = setTimeout(
+          () => {
+            try { socket.close(1008, 'token_expired'); } catch { /* ignore */ }
+          },
+          Math.min(msUntilExp, 2_147_000_000)
+        );
+      }
+      socket.on('close', () => {
+        if (expiryTimer) clearTimeout(expiryTimer);
+        wsHub.remove(sub);
+      });
       // Cap message rate from clients (protects the hub from chatty/abusive sockets).
       let recentMsgs = 0;
       const recentReset = setInterval(() => {

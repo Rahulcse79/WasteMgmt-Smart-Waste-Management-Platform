@@ -72,15 +72,32 @@ export const MqttService = {
     }
 
     const url = `${config.MQTT_PROTOCOL}://${config.MQTT_HOST}:${config.MQTT_PORT}`;
+    // Reconnect with full-jitter exponential backoff. The mqtt library calls
+    // this option every reconnect cycle to compute the next delay, so we can
+    // grow the wait window without restarting the client.
+    let reconnectAttempts = 0;
+    const baseDelayMs = 1000;
+    const maxDelayMs = 60_000;
+    const computeReconnectDelay = (): number => {
+      const expCap = Math.min(maxDelayMs, baseDelayMs * 2 ** reconnectAttempts);
+      reconnectAttempts = Math.min(reconnectAttempts + 1, 16);
+      // Full jitter: random between 0 and expCap. Avoids thundering-herd.
+      return Math.floor(Math.random() * expCap);
+    };
     client = mqtt.connect(url, {
       clientId: config.MQTT_CLIENT_ID,
       ca,
       cert,
       key,
       rejectUnauthorized: config.MQTT_REJECT_UNAUTHORIZED,
-      reconnectPeriod: 5000,
+      // Initial value; replaced on each cycle by computeReconnectDelay below.
+      reconnectPeriod: baseDelayMs,
       keepalive: 30,
     });
+    // mqtt v5 lets us mutate options.reconnectPeriod between attempts.
+    const mutate = client as unknown as { options: { reconnectPeriod: number } };
+    client.on('connect', () => { reconnectAttempts = 0; mutate.options.reconnectPeriod = baseDelayMs; });
+    client.on('close', () => { mutate.options.reconnectPeriod = computeReconnectDelay(); });
 
     client.on('connect', () => {
       logger.info({ url }, '📡 MQTT connected');
@@ -90,7 +107,7 @@ export const MqttService = {
       });
     });
 
-    client.on('reconnect', () => logger.warn('📡 MQTT reconnecting…'));
+    client.on('reconnect', () => logger.warn({ nextDelayMs: mutate.options.reconnectPeriod }, '📡 MQTT reconnecting…'));
     client.on('error', (err) => logger.error({ err }, '📡 MQTT error'));
     client.on('close', () => logger.warn('📡 MQTT connection closed'));
 

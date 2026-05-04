@@ -43,6 +43,7 @@ const CFG = {
 	INTERVAL_MS: Math.max(1000, Number(process.env.INTERVAL_MS || 5000)),
 	LOG_EVERY_N_CYCLES: Math.max(1, Number(process.env.LOG_EVERY_N_CYCLES || 3)),
 	START_LOCAL_BROKER: String(process.env.START_LOCAL_BROKER || "true") === "true",
+	DUSTBIN_COUNT: Math.max(50, Number(process.env.DUSTBIN_COUNT || 50)),
 };
 
 let localBrokerServer = null;
@@ -108,21 +109,27 @@ function formatCt(date = new Date()) {
 }
 
 function makeDustbins() {
-	return INDIA_LOCATIONS.map((loc, idx) => ({
-		dustbinId: `IN-DB-${String(idx + 1).padStart(3, "0")}`,
-		dustbinName: `${loc.city} Smart Bin ${idx + 1}`,
-		city: loc.city,
-		state: loc.state,
-		latitude: jitter(loc.lat),
-		longitude: jitter(loc.lon),
-		// Stateful metrics for smoother random walk
-		metrics: {
-			depth: randomBetween(15, 85),
-			gas: randomBetween(120, 480),
-			humidity: randomBetween(35, 78),
-			temperature: randomBetween(24, 37),
-		},
-	}));
+	const out = [];
+	for (let idx = 0; idx < CFG.DUSTBIN_COUNT; idx += 1) {
+		const loc = INDIA_LOCATIONS[idx % INDIA_LOCATIONS.length];
+		const batch = Math.floor(idx / INDIA_LOCATIONS.length) + 1;
+		out.push({
+			dustbinId: `IN-DB-${String(idx + 1).padStart(3, "0")}`,
+			dustbinName: `${loc.city} Smart Bin ${batch}-${(idx % INDIA_LOCATIONS.length) + 1}`,
+			city: loc.city,
+			state: loc.state,
+			latitude: jitter(loc.lat, 0.05),
+			longitude: jitter(loc.lon, 0.05),
+			// Stateful metrics for smoother random walk
+			metrics: {
+				depth: randomBetween(15, 85),
+				gas: randomBetween(120, 480),
+				humidity: randomBetween(35, 78),
+				temperature: randomBetween(24, 37),
+			},
+		});
+	}
+	return out;
 }
 
 function nextMetrics(prev) {

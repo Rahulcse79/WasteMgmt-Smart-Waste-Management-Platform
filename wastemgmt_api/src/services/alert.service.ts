@@ -3,10 +3,12 @@ import { UserModel } from '../models/User.js';
 import { EmailService } from './email.service.js';
 import { logger } from '../logger.js';
 
-async function recipientsForDustbin(dustbinId: string): Promise<string[]> {
-  // Notify any active user who has this dustbin in their assignedDustbins, plus active admins.
+async function recipientsForDustbin(dustbinId: string, tenantId: string): Promise<string[]> {
+  // Notify any active user IN THIS TENANT who has this dustbin in their
+  // assignedDustbins, plus active admins of this tenant.
   const users = await UserModel.find({
     isActive: true,
+    tenantId,
     $or: [{ assignedDustbins: dustbinId }, { role: 'admin' }],
   })
     .select('email')
@@ -15,6 +17,28 @@ async function recipientsForDustbin(dustbinId: string): Promise<string[]> {
 }
 
 export class AlertService {
+  private static readonly MAX_ALERTS_PER_DUSTBIN = 5;
+
+  private static async trimDustbinAlertHistory(
+    dustbinId: string,
+    tenantId: string
+  ): Promise<void> {
+    const keep = await AlertModel.find({ dustbinId, tenantId })
+      .sort({ createdAt: -1 })
+      .limit(AlertService.MAX_ALERTS_PER_DUSTBIN)
+      .select('_id')
+      .lean();
+
+    if (keep.length < AlertService.MAX_ALERTS_PER_DUSTBIN) return;
+
+    const keepIds = keep.map((x) => x._id);
+    await AlertModel.deleteMany({
+      dustbinId,
+      tenantId,
+      _id: { $nin: keepIds },
+    });
+  }
+
   static async raise(input: {
     dustbinId: string;
     type: AlertDoc['type'];
@@ -26,6 +50,7 @@ export class AlertService {
     tenantId?: string;
     notifyEmail?: boolean;
   }): Promise<AlertDoc> {
+    const tenantId = input.tenantId ?? 'default';
     const alert = await AlertModel.create({
       dustbinId: input.dustbinId,
       type: input.type,
@@ -34,16 +59,25 @@ export class AlertService {
       metric: input.metric,
       value: input.value,
       threshold: input.threshold,
-      tenantId: input.tenantId ?? 'default',
+      tenantId,
     });
 
     if (input.notifyEmail) {
-      recipientsForDustbin(input.dustbinId)
+      recipientsForDustbin(input.dustbinId, tenantId)
         .then((extra) => EmailService.sendAlert(alert, extra))
         .catch((err) =>
           logger.error({ err, alertId: alert.id }, 'Failed to send alert email')
         );
     }
+
+    // Keep alert collections lean for high-throughput bins.
+    AlertService.trimDustbinAlertHistory(input.dustbinId, tenantId).catch((err) =>
+      logger.error(
+        { err, dustbinId: input.dustbinId, tenantId },
+        'Failed to trim old alert history'
+      )
+    );
+
     return alert;
   }
 

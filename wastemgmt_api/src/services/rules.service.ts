@@ -10,6 +10,23 @@ const ops: Record<string, (a: number, b: number) => boolean> = {
   eq: (a, b) => a === b,
 };
 
+// Built-in alert cooldown: don't re-fire the same built-in alert for the same
+// dustbin/type more often than this. Mirrors the per-rule cooldown contract.
+const BUILTIN_COOLDOWN_MS = 5 * 60 * 1000;
+const builtinLastFire = new Map<string, number>();
+
+function builtinKey(dustbinId: string, type: string): string {
+  return `${dustbinId}::${type}`;
+}
+
+function shouldFireBuiltin(dustbinId: string, type: string, now: number): boolean {
+  const key = builtinKey(dustbinId, type);
+  const last = builtinLastFire.get(key);
+  if (last && now - last < BUILTIN_COOLDOWN_MS) return false;
+  builtinLastFire.set(key, now);
+  return true;
+}
+
 export class RulesService {
   /**
    * Evaluate all enabled rules for a freshly ingested reading. Honours per-rule
@@ -22,12 +39,13 @@ export class RulesService {
     tenantId?: string;
   }): Promise<void> {
     const { dustbinId, metric, value, tenantId } = input;
+    const effectiveTenant = tenantId ?? 'default';
 
-    // ── Built-in safety nets (always on) ──────────────────────────────────
-    await this.evaluateBuiltins(dustbinId, metric, value, tenantId);
+    // ── Built-in safety nets (always on, with per-bin cooldown) ────────────
+    await this.evaluateBuiltins(dustbinId, metric, value, effectiveTenant);
 
-    // ── Admin-configured rules ────────────────────────────────────────────
-    const rules = await RuleModel.find({ enabled: true, metric });
+    // ── Admin-configured rules — scoped to this tenant ─────────────────────
+    const rules = await RuleModel.find({ enabled: true, metric, tenantId: effectiveTenant });
     const now = new Date();
 
     for (const rule of rules) {
@@ -46,6 +64,23 @@ export class RulesService {
         continue;
       }
 
+      // Persist the cooldown FIRST and atomically. If we wrote the cooldown
+      // after raising the alert, two concurrent ingests could both pass the
+      // check above and raise duplicate alerts. The conditional update only
+      // succeeds for the first writer per cooldown window.
+      const cooldownCutoff = new Date(now.getTime() - rule.cooldownSec * 1000);
+      const claim = await RuleModel.updateOne(
+        {
+          _id: rule._id,
+          $or: [
+            { [`lastFiredAt.${dustbinId}`]: { $exists: false } },
+            { [`lastFiredAt.${dustbinId}`]: { $lte: cooldownCutoff } },
+          ],
+        },
+        { $set: { [`lastFiredAt.${dustbinId}`]: now } }
+      );
+      if (claim.modifiedCount === 0) continue;
+
       await AlertService.raise({
         dustbinId,
         type: rule.alertType,
@@ -57,9 +92,6 @@ export class RulesService {
         tenantId: rule.tenantId,
         notifyEmail: rule.notifyEmail,
       });
-
-      rule.lastFiredAt?.set?.(dustbinId, now);
-      await rule.save();
     }
   }
 
@@ -67,9 +99,10 @@ export class RulesService {
     dustbinId: string,
     metric: Metric,
     value: number,
-    tenantId?: string
+    tenantId: string
   ): Promise<void> {
-    if (metric === 'depth' && value >= 80) {
+    const now = Date.now();
+    if (metric === 'depth' && value >= 80 && shouldFireBuiltin(dustbinId, 'BIN_FULL', now)) {
       await AlertService.raise({
         dustbinId,
         type: 'BIN_FULL',
@@ -82,7 +115,7 @@ export class RulesService {
         notifyEmail: value >= 95,
       });
     }
-    if (metric === 'gas' && value >= 300) {
+    if (metric === 'gas' && value >= 300 && shouldFireBuiltin(dustbinId, 'GAS_HIGH', now)) {
       await AlertService.raise({
         dustbinId,
         type: 'GAS_HIGH',

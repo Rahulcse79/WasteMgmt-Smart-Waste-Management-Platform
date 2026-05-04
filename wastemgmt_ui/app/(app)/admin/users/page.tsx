@@ -1,49 +1,49 @@
 "use client";
-import { useEffect, useState } from "react";
-import { api, auth } from "@/lib/api";
+import { useState } from "react";
+import { auth, usersApi, type UserRow } from "@/lib/api";
+import { usePaginatedList } from "@/lib/usePaginatedList";
+import { Pagination } from "@/components/ui/Pagination";
 
-interface AdminUser {
-  _id: string;
-  username: string;
-  role: "admin" | "user";
-  email?: string;
-  assignedDustbins?: string[];
-  isActive?: boolean;
-  lastLoginAt?: string;
-}
+type UserFilters = { q?: string; role?: "admin" | "user" };
 
 export default function AdminUsersPage(): React.ReactElement {
-  const [users, setUsers] = useState<AdminUser[]>([]);
-  const [form, setForm] = useState({ username: "", password: "", role: "user" as "admin" | "user", email: "" });
+  const [form, setForm] = useState({
+    username: "",
+    password: "",
+    role: "user" as "admin" | "user",
+    email: "",
+  });
   const [emailDrafts, setEmailDrafts] = useState<Record<string, string>>({});
   const [savingEmailFor, setSavingEmailFor] = useState<string | null>(null);
   const [resetMsg, setResetMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const currentUser = auth.current();
 
-  async function refresh(): Promise<void> {
-    const r = await api.get<AdminUser[]>("/users");
-    const list = Array.isArray(r.data) ? r.data : [];
-    setUsers(list);
-    setEmailDrafts(Object.fromEntries(list.map((u) => [u._id, u.email ?? ""])));
-  }
-
-  useEffect(() => {
-    void refresh();
-  }, []);
+  const list = usePaginatedList<UserRow, UserFilters>({
+    fetcher: async (args) => {
+      const page = await usersApi.page(args);
+      // Sync the editable email drafts whenever a new page arrives.
+      setEmailDrafts((prev) => {
+        const next = { ...prev };
+        for (const u of page.items) if (next[u._id] === undefined) next[u._id] = u.email ?? "";
+        return next;
+      });
+      return page;
+    },
+  });
 
   async function create(e: React.FormEvent): Promise<void> {
     e.preventDefault();
     setErr(null);
     try {
-      await api.post("/users", {
+      await usersApi.create({
         username: form.username.trim(),
         password: form.password,
         role: form.role,
         email: form.email.trim() ? form.email.trim() : undefined,
       });
       setForm({ username: "", password: "", role: "user", email: "" });
-      await refresh();
+      list.refresh();
     } catch (e) {
       const x = e as { response?: { data?: { error?: string } } };
       setErr(x?.response?.data?.error ?? "Create failed");
@@ -51,14 +51,14 @@ export default function AdminUsersPage(): React.ReactElement {
   }
 
   async function reset(id: string): Promise<void> {
-    const res = await api.post<{ newPassword: string }>(`/users/${id}/reset-password`, {});
-    setResetMsg(`New password: ${res.data.newPassword}`);
+    const res = await usersApi.resetPassword(id);
+    setResetMsg(`New password: ${res.newPassword}`);
   }
 
   async function remove(id: string): Promise<void> {
     if (!confirm("Delete this user?")) return;
-    await api.delete(`/users/${id}`);
-    await refresh();
+    await usersApi.remove(id);
+    list.refresh();
   }
 
   async function updateEmail(id: string): Promise<void> {
@@ -66,7 +66,7 @@ export default function AdminUsersPage(): React.ReactElement {
     setErr(null);
     setSavingEmailFor(id);
     try {
-      await api.patch(`/users/${id}`, { email: nextEmail || undefined });
+      await usersApi.update(id, { email: nextEmail || undefined });
       if (currentUser?.id === id && typeof window !== "undefined") {
         const userRaw = window.localStorage.getItem("wm.user");
         if (userRaw) {
@@ -75,7 +75,7 @@ export default function AdminUsersPage(): React.ReactElement {
           window.localStorage.setItem("wm.user", JSON.stringify(parsed));
         }
       }
-      await refresh();
+      list.refresh();
     } catch (e) {
       const x = e as { response?: { data?: { error?: string } } };
       setErr(x?.response?.data?.error ?? "Email update failed");
@@ -136,6 +136,30 @@ export default function AdminUsersPage(): React.ReactElement {
         </div>
       ) : null}
 
+      {/* Server-side filters */}
+      <div className="flex flex-wrap items-center gap-3">
+        <input
+          placeholder="Search username / email…"
+          value={list.filters.q ?? ""}
+          onChange={(e) => list.setFilters((f) => ({ ...f, q: e.target.value }))}
+          className="bg-[var(--panel-2)] border border-[var(--border)] rounded px-3 py-2 text-sm w-72"
+        />
+        <select
+          value={list.filters.role ?? ""}
+          onChange={(e) =>
+            list.setFilters((f) => ({
+              ...f,
+              role: (e.target.value || undefined) as "admin" | "user" | undefined,
+            }))
+          }
+          className="bg-[var(--panel-2)] border border-[var(--border)] rounded px-3 py-2 text-sm"
+        >
+          <option value="">All roles</option>
+          <option value="admin">admin</option>
+          <option value="user">user</option>
+        </select>
+      </div>
+
       <div className="rounded-xl bg-[var(--panel)] border border-[var(--border)] overflow-hidden">
         <table className="w-full text-sm">
           <thead>
@@ -143,62 +167,66 @@ export default function AdminUsersPage(): React.ReactElement {
               <th className="px-4 py-3 text-left">Username</th>
               <th className="px-4 py-3 text-left">Email</th>
               <th className="px-4 py-3 text-left">Role</th>
-              <th className="px-4 py-3 text-left">Last login</th>
               <th className="px-4 py-3 text-center">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--border)]">
-            {users.map((u) => (
-              <tr key={u._id}>
-                <td className="px-4 py-2 text-white">{u.username}</td>
-                <td className="px-4 py-2 text-zinc-300">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="email"
-                      value={emailDrafts[u._id] ?? ""}
-                      onChange={(e) => setEmailDrafts((prev) => ({ ...prev, [u._id]: e.target.value }))}
-                      placeholder="email@company.com"
-                      className="bg-[var(--panel-2)] border border-[var(--border)] rounded px-2 py-1 text-xs min-w-[200px]"
-                    />
-                    <button
-                      onClick={() => void updateEmail(u._id)}
-                      disabled={savingEmailFor === u._id}
-                      className="text-xs text-emerald-300 hover:text-emerald-100"
+            {list.initialLoading ? (
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-zinc-400">Loading…</td></tr>
+            ) : list.items.length === 0 ? (
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-zinc-400">{list.error ?? "No users."}</td></tr>
+            ) : (
+              list.items.map((u) => (
+                <tr key={u._id} className={list.loading ? "opacity-60 transition" : "transition"}>
+                  <td className="px-4 py-2 text-white">{u.username}</td>
+                  <td className="px-4 py-2 text-zinc-300">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="email"
+                        value={emailDrafts[u._id] ?? ""}
+                        onChange={(e) => setEmailDrafts((prev) => ({ ...prev, [u._id]: e.target.value }))}
+                        placeholder="email@company.com"
+                        className="bg-[var(--panel-2)] border border-[var(--border)] rounded px-2 py-1 text-xs min-w-[200px]"
+                      />
+                      <button
+                        onClick={() => void updateEmail(u._id)}
+                        disabled={savingEmailFor === u._id}
+                        className="text-xs text-emerald-300 hover:text-emerald-100"
+                      >
+                        {savingEmailFor === u._id ? "Saving..." : "Update"}
+                      </button>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2">
+                    <span
+                      className={`px-1.5 py-0.5 text-[10px] rounded uppercase tracking-wide ${
+                        u.role === "admin" ? "bg-amber-500/20 text-amber-300" : "bg-cyan-500/20 text-cyan-300"
+                      }`}
                     >
-                      {savingEmailFor === u._id ? "Saving..." : "Update"}
+                      {u.role}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2 text-center space-x-3">
+                    <button onClick={() => reset(u._id)} className="text-xs text-cyan-300 hover:text-cyan-100">
+                      Reset password
                     </button>
-                  </div>
-                </td>
-                <td className="px-4 py-2">
-                  <span
-                    className={`px-1.5 py-0.5 text-[10px] rounded uppercase tracking-wide ${
-                      u.role === "admin" ? "bg-amber-500/20 text-amber-300" : "bg-cyan-500/20 text-cyan-300"
-                    }`}
-                  >
-                    {u.role}
-                  </span>
-                </td>
-                <td className="px-4 py-2 text-zinc-300">
-                  {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString() : "—"}
-                </td>
-                <td className="px-4 py-2 text-center space-x-3">
-                  <button
-                    onClick={() => reset(u._id)}
-                    className="text-xs text-cyan-300 hover:text-cyan-100"
-                  >
-                    Reset password
-                  </button>
-                  <button
-                    onClick={() => remove(u._id)}
-                    className="text-xs text-rose-300 hover:text-rose-100"
-                  >
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
+                    <button onClick={() => remove(u._id)} className="text-xs text-rose-300 hover:text-rose-100">
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
+        <Pagination
+          page={list.page}
+          pageSize={list.pageSize}
+          total={list.total}
+          loading={list.loading}
+          onPageChange={list.setPage}
+          onPageSizeChange={list.setPageSize}
+        />
       </div>
     </div>
   );

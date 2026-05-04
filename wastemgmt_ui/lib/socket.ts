@@ -46,6 +46,9 @@ function setReady(entry: SocketPoolEntry, ready: boolean): void {
 }
 
 function connect(key: string, entry: SocketPoolEntry): void {
+  // Re-read the token on EVERY (re)connect attempt. The token may have been
+  // refreshed by the axios interceptor while the previous socket was dead;
+  // capturing it once at first-connect would keep using a stale value forever.
   const token = auth.token();
   if (!token) {
     setReady(entry, false);
@@ -70,7 +73,10 @@ function connect(key: string, entry: SocketPoolEntry): void {
   ws.onclose = () => {
     setReady(entry, false);
     if (!entry.alive || entry.listeners.size === 0) return;
-    const delay = Math.min(30_000, 1000 * 2 ** entry.attempt++);
+    // Full-jitter exponential backoff, capped at 30s. Without jitter every
+    // tab reconnects in lockstep when the server bounces -> thundering herd.
+    const expCap = Math.min(30_000, 1000 * 2 ** entry.attempt++);
+    const delay = Math.floor(Math.random() * expCap);
     entry.reconnectTimer = setTimeout(() => connect(key, entry), delay);
   };
   ws.onerror = () => ws.close();

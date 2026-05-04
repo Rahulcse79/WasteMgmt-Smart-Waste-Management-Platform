@@ -6,6 +6,7 @@ import { UserModel } from '../models/User.js';
 import { validateBody } from '../middleware/validate.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { AuditService } from '../services/audit.service.js';
+import { parsePage, buildEnvelope } from '../utils/pagination.js';
 
 const SubmitSchema = z.object({
   dustbinId: z.string().trim().max(64).optional(),
@@ -72,11 +73,25 @@ export async function citizenRoutes(app: FastifyInstance): Promise<void> {
     '/citizen-reports',
     { preHandler: [requireAuth, requireRole('admin')] },
     async (req) => {
-      const q = req.query as { status?: string; limit?: string };
+      const q = req.query as { status?: string; category?: string; q?: string; limit?: string };
       const filter: Record<string, unknown> = {};
       if (q.status) filter.status = q.status;
-      const limit = Math.max(1, Math.min(500, Number(q.limit) || 100));
-      return CitizenReportModel.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
+      if (q.category) filter.category = q.category;
+      if (q.q && q.q.trim()) {
+        const safe = q.q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const rx = new RegExp(safe, 'i');
+        filter.$or = [{ description: rx }, { dustbinId: rx }, { contactName: rx }, { contactEmail: rx }];
+      }
+      const p = parsePage(req);
+      if (p.legacy) {
+        const limit = Math.max(1, Math.min(500, Number(q.limit) || 100));
+        return CitizenReportModel.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
+      }
+      const [items, total] = await Promise.all([
+        CitizenReportModel.find(filter).sort({ createdAt: -1 }).skip(p.skip).limit(p.pageSize).lean(),
+        p.skipTotal ? Promise.resolve(-1) : CitizenReportModel.countDocuments(filter),
+      ]);
+      return buildEnvelope(items, total, p);
     }
   );
 

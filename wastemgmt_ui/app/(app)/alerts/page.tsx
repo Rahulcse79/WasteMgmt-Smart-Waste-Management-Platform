@@ -1,52 +1,51 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
-import { api, exports as ex } from "@/lib/api";
+import { alertsApi, exports as ex, type AlertRow } from "@/lib/api";
 import { useLiveSocket } from "@/lib/socket";
-import type { Alert } from "@/lib/types";
-import { Card, CardBody, CardHeader, CardTitle, Chip, EmptyState, Skeleton } from "@/components/ui/Primitives";
+import { usePaginatedList } from "@/lib/usePaginatedList";
+import { Card, CardHeader, CardTitle, Chip, EmptyState, Skeleton } from "@/components/ui/Primitives";
+import { Pagination } from "@/components/ui/Pagination";
 import { BellIcon } from "@/components/Icons";
 import { CheckIcon, DownloadIcon } from "@/components/IconsExtended";
 
-type Severity = Alert["severity"];
+type AlertFilters = {
+  acknowledged?: "true" | "false";
+  severity?: AlertRow["severity"];
+  type?: string;
+  dustbinId?: string;
+};
 
 export default function AlertsPage(): React.ReactElement {
-  const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<"all" | Severity | "open">("open");
+  const list = usePaginatedList<AlertRow, AlertFilters>({
+    fetcher: (args) => alertsApi.page(args),
+    initialFilters: { acknowledged: "false" },
+  });
 
-  const load = () => api.get<Alert[]>("/alerts").then((r) => setAlerts(r.data)).catch(() => undefined).finally(() => setLoading(false));
-  useEffect(() => { void load(); }, []);
   // Re-poll on any inbound bin event — alerts may have been raised on the server.
-  useLiveSocket(["dustbin:*"], () => { void load(); });
+  useLiveSocket(["dustbin:*"], () => list.refresh());
 
   const ack = async (id: string) => {
-    await api.post(`/alerts/${id}/ack`);
-    setAlerts((prev) => prev.map((a) => (a._id === id ? { ...a, acknowledged: true } : a)));
+    await alertsApi.ack(id);
+    list.refresh();
   };
 
-  const filtered = useMemo(() => alerts.filter((a) => {
-    if (filter === "all") return true;
-    if (filter === "open") return !a.acknowledged;
-    return a.severity === filter;
-  }), [alerts, filter]);
+  // Quick-filter chip toolbar — sets server-side filters, never client-side.
+  const setView = (v: "open" | "all" | AlertRow["severity"]) => {
+    if (v === "open") list.setFilters({ acknowledged: "false" });
+    else if (v === "all") list.setFilters({});
+    else list.setFilters({ severity: v });
+  };
 
-  const counts = useMemo(() => {
-    let critical = 0, warning = 0, info = 0, open = 0;
-    for (const a of alerts) {
-      if (!a.acknowledged) open++;
-      if (a.severity === "critical") critical++;
-      else if (a.severity === "warning") warning++;
-      else info++;
-    }
-    return { critical, warning, info, open, total: alerts.length };
-  }, [alerts]);
+  const activeView: "open" | "all" | AlertRow["severity"] =
+    list.filters.severity ?? (list.filters.acknowledged === "false" ? "open" : "all");
 
   return (
     <div className="space-y-4">
       <div className="flex items-end justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight"><span className="text-grad">Alerts</span></h1>
-          <p className="text-sm" style={{ color: "var(--fg-muted)" }}>{counts.open} open · {counts.total} total</p>
+          <p className="text-sm" style={{ color: "var(--fg-muted)" }}>
+            {list.total >= 0 ? `${list.total.toLocaleString()} matching` : "Live"}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => ex.download("alerts")} className="btn"><DownloadIcon /> CSV</button>
@@ -55,16 +54,26 @@ export default function AlertsPage(): React.ReactElement {
 
       <div className="flex items-center gap-1 flex-wrap">
         {([
-          { k: "open", label: `Open (${counts.open})` },
-          { k: "all", label: `All (${counts.total})` },
-          { k: "critical", label: `Critical (${counts.critical})` },
-          { k: "warning", label: `Warning (${counts.warning})` },
-          { k: "info", label: `Info (${counts.info})` },
+          { k: "open", label: "Open" },
+          { k: "all", label: "All" },
+          { k: "critical", label: "Critical" },
+          { k: "warning", label: "Warning" },
+          { k: "info", label: "Info" },
         ] as const).map((f) => (
-          <button key={f.k} onClick={() => setFilter(f.k)} className={`btn btn-sm ${filter === f.k ? "btn-primary" : "btn-ghost"}`}>
+          <button
+            key={f.k}
+            onClick={() => setView(f.k as "open" | "all" | AlertRow["severity"])}
+            className={`btn btn-sm ${activeView === f.k ? "btn-primary" : "btn-ghost"}`}
+          >
             {f.label}
           </button>
         ))}
+        <input
+          placeholder="dustbinId"
+          value={list.filters.dustbinId ?? ""}
+          onChange={(e) => list.setFilters((f) => ({ ...f, dustbinId: e.target.value || undefined }))}
+          className="bg-[var(--panel-2)] border border-[var(--border)] rounded px-3 py-1.5 text-xs ml-2"
+        />
       </div>
 
       <Card>
@@ -82,16 +91,30 @@ export default function AlertsPage(): React.ReactElement {
               </tr>
             </thead>
             <tbody className="divide-y" style={{ borderColor: "var(--border)" }}>
-              {loading ? (
+              {list.initialLoading ? (
                 Array.from({ length: 5 }).map((_, i) => (
-                  <tr key={i}>{Array.from({ length: 6 }).map((__, j) => <td key={j} className="px-4 py-3"><Skeleton className="h-4 w-full" /></td>)}</tr>
+                  <tr key={i}>
+                    {Array.from({ length: 6 }).map((__, j) => (
+                      <td key={j} className="px-4 py-3"><Skeleton className="h-4 w-full" /></td>
+                    ))}
+                  </tr>
                 ))
-              ) : filtered.length === 0 ? (
-                <tr><td colSpan={6}><EmptyState title="No alerts in this view" hint="When sensors trip a rule the alert appears here." icon={<BellIcon />} /></td></tr>
+              ) : list.items.length === 0 ? (
+                <tr>
+                  <td colSpan={6}>
+                    <EmptyState
+                      title="No alerts in this view"
+                      hint="When sensors trip a rule the alert appears here."
+                      icon={<BellIcon />}
+                    />
+                  </td>
+                </tr>
               ) : (
-                filtered.map((a) => (
-                  <tr key={a._id} className={a.acknowledged ? "opacity-60" : ""}>
-                    <td className="px-4 py-2 whitespace-nowrap" style={{ color: "var(--fg-muted)" }}>{new Date(a.createdAt).toLocaleString()}</td>
+                list.items.map((a) => (
+                  <tr key={a._id} className={`${a.acknowledged ? "opacity-60" : ""} ${list.loading ? "transition opacity-80" : ""}`}>
+                    <td className="px-4 py-2 whitespace-nowrap" style={{ color: "var(--fg-muted)" }}>
+                      {new Date(a.createdAt).toLocaleString()}
+                    </td>
                     <td className="px-4 py-2 font-mono text-xs">{a.dustbinId}</td>
                     <td className="px-4 py-2">{a.type}</td>
                     <td className="px-4 py-2">
@@ -113,6 +136,14 @@ export default function AlertsPage(): React.ReactElement {
             </tbody>
           </table>
         </div>
+        <Pagination
+          page={list.page}
+          pageSize={list.pageSize}
+          total={list.total}
+          loading={list.loading}
+          onPageChange={list.setPage}
+          onPageSizeChange={list.setPageSize}
+        />
       </Card>
     </div>
   );

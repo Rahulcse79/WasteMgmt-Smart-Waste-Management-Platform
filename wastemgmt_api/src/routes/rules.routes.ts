@@ -4,6 +4,7 @@ import { RuleModel } from '../models/Rule.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validate.js';
 import { AuditService } from '../services/audit.service.js';
+import { parsePage, buildEnvelope } from '../utils/pagination.js';
 
 const RuleSchema = z.object({
   name: z.string().min(1),
@@ -19,9 +20,20 @@ const RuleSchema = z.object({
 });
 
 export async function rulesRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/rules', { preHandler: [requireAuth, requireRole('admin')] }, async () =>
-    RuleModel.find({}).sort({ createdAt: -1 }).lean()
-  );
+  app.get('/rules', { preHandler: [requireAuth, requireRole('admin')] }, async (req) => {
+    const q = req.query as { metric?: string; enabled?: string };
+    const filter: Record<string, unknown> = {};
+    if (q.metric) filter.metric = q.metric;
+    if (q.enabled === 'true') filter.enabled = true;
+    if (q.enabled === 'false') filter.enabled = false;
+    const p = parsePage(req);
+    if (p.legacy) return RuleModel.find(filter).sort({ createdAt: -1 }).lean();
+    const [items, total] = await Promise.all([
+      RuleModel.find(filter).sort({ createdAt: -1 }).skip(p.skip).limit(p.pageSize).lean(),
+      p.skipTotal ? Promise.resolve(-1) : RuleModel.countDocuments(filter),
+    ]);
+    return buildEnvelope(items, total, p);
+  });
 
   app.post(
     '/rules',

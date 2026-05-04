@@ -1,8 +1,9 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { DustbinModel } from '../models/Dustbin.js';
 import { AlertModel } from '../models/Alert.js';
 import { CitizenReportModel } from '../models/CitizenReport.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { logger } from '../logger.js';
 
 /** Minimal RFC 4180 CSV escaping. */
 function csvEscape(v: unknown): string {
@@ -12,12 +13,50 @@ function csvEscape(v: unknown): string {
   return s;
 }
 
-function toCsv(rows: Array<Record<string, unknown>>, headers: string[]): string {
-  const lines = [headers.join(',')];
-  for (const row of rows) {
-    lines.push(headers.map((h) => csvEscape(row[h])).join(','));
+function csvLine(headers: string[], row: Record<string, unknown>): string {
+  return headers.map((h) => csvEscape(row[h])).join(',') + '\r\n';
+}
+
+function startCsv(reply: FastifyReply, filename: string, headers: string[]): void {
+  // Hijack so we can stream gigabytes without materialising the whole CSV in
+  // memory (was a real OOM risk before). After hijack, Fastify will not touch
+  // the response, so we write the status line + headers ourselves on the raw
+  // socket — using reply.type()/reply.header() at this point would be ignored.
+  reply.hijack();
+  reply.raw.writeHead(200, {
+    'content-type': 'text/csv; charset=utf-8',
+    'content-disposition': `attachment; filename="${filename}"`,
+    'cache-control': 'no-store',
+    'transfer-encoding': 'chunked',
+  });
+  reply.raw.write(headers.join(',') + '\r\n');
+}
+
+/** Drain a Mongoose cursor into the raw response, line by line, with back-pressure. */
+async function streamCursor<T>(
+  reply: FastifyReply,
+  cursor: AsyncIterable<T>,
+  headers: string[],
+  rowMapper: (doc: T) => Record<string, unknown>
+): Promise<void> {
+  try {
+    for await (const doc of cursor) {
+      const ok = reply.raw.write(csvLine(headers, rowMapper(doc)));
+      if (!ok) {
+        // Respect TCP back-pressure so a slow client can't blow up RSS.
+        await new Promise<void>((resolve) => reply.raw.once('drain', resolve));
+      }
+    }
+    reply.raw.end();
+  } catch (err) {
+    logger.error({ err }, 'CSV export stream failed mid-flight');
+    // Headers are already sent; best we can do is terminate the connection.
+    try {
+      reply.raw.destroy(err as Error);
+    } catch {
+      /* ignore */
+    }
   }
-  return lines.join('\r\n');
 }
 
 export async function exportRoutes(app: FastifyInstance): Promise<void> {
@@ -25,10 +64,16 @@ export async function exportRoutes(app: FastifyInstance): Promise<void> {
     '/export/dustbins.csv',
     { preHandler: [requireAuth, requireRole('admin')] },
     async (_req, reply) => {
-      const docs = await DustbinModel.find({ isActive: true })
+      const headers = [
+        'dustbinId', 'dustbinName', 'zone', 'latitude', 'longitude',
+        'online', 'lastSeenAt', 'depth', 'gas', 'humidity', 'temperature',
+      ];
+      startCsv(reply, 'dustbins.csv', headers);
+      const cursor = DustbinModel.find({ isActive: true })
         .select('dustbinId dustbinName zone latitude longitude online lastSeenAt latest')
-        .lean();
-      const rows = docs.map((d) => ({
+        .lean()
+        .cursor();
+      await streamCursor(reply, cursor, headers, (d) => ({
         dustbinId: d.dustbinId,
         dustbinName: d.dustbinName,
         zone: d.zone ?? '',
@@ -41,22 +86,6 @@ export async function exportRoutes(app: FastifyInstance): Promise<void> {
         humidity: d.latest?.humidity ?? '',
         temperature: d.latest?.temperature ?? '',
       }));
-      reply
-        .type('text/csv; charset=utf-8')
-        .header('Content-Disposition', 'attachment; filename="dustbins.csv"');
-      return toCsv(rows, [
-        'dustbinId',
-        'dustbinName',
-        'zone',
-        'latitude',
-        'longitude',
-        'online',
-        'lastSeenAt',
-        'depth',
-        'gas',
-        'humidity',
-        'temperature',
-      ]);
     }
   );
 
@@ -68,15 +97,24 @@ export async function exportRoutes(app: FastifyInstance): Promise<void> {
       const filter: Record<string, unknown> = {};
       if (q.from || q.to) {
         const range: Record<string, Date> = {};
-        if (q.from) range.$gte = new Date(q.from);
-        if (q.to) range.$lte = new Date(q.to);
-        filter.createdAt = range;
+        if (q.from) {
+          const d = new Date(q.from);
+          if (!Number.isNaN(d.getTime())) range.$gte = d;
+        }
+        if (q.to) {
+          const d = new Date(q.to);
+          if (!Number.isNaN(d.getTime())) range.$lte = d;
+        }
+        if (Object.keys(range).length) filter.createdAt = range;
       }
-      const docs = await AlertModel.find(filter)
-        .sort({ createdAt: -1 })
-        .limit(Math.max(1, Math.min(50_000, Number(q.limit) || 5000)))
-        .lean();
-      const rows = docs.map((a) => ({
+      const limit = Math.max(1, Math.min(50_000, Number(q.limit) || 5000));
+      const headers = [
+        'createdAt', 'dustbinId', 'type', 'severity', 'message',
+        'metric', 'value', 'threshold', 'acknowledged', 'acknowledgedBy',
+      ];
+      startCsv(reply, 'alerts.csv', headers);
+      const cursor = AlertModel.find(filter).sort({ createdAt: -1 }).limit(limit).lean().cursor();
+      await streamCursor(reply, cursor, headers, (a) => ({
         createdAt: a.createdAt,
         dustbinId: a.dustbinId,
         type: a.type,
@@ -88,21 +126,6 @@ export async function exportRoutes(app: FastifyInstance): Promise<void> {
         acknowledged: a.acknowledged ? 'yes' : 'no',
         acknowledgedBy: a.acknowledgedBy ?? '',
       }));
-      reply
-        .type('text/csv; charset=utf-8')
-        .header('Content-Disposition', 'attachment; filename="alerts.csv"');
-      return toCsv(rows, [
-        'createdAt',
-        'dustbinId',
-        'type',
-        'severity',
-        'message',
-        'metric',
-        'value',
-        'threshold',
-        'acknowledged',
-        'acknowledgedBy',
-      ]);
     }
   );
 
@@ -110,8 +133,14 @@ export async function exportRoutes(app: FastifyInstance): Promise<void> {
     '/export/citizen-reports.csv',
     { preHandler: [requireAuth, requireRole('admin')] },
     async (_req, reply) => {
-      const docs = await CitizenReportModel.find({}).sort({ createdAt: -1 }).limit(20_000).lean();
-      const rows = docs.map((r) => ({
+      const headers = [
+        'createdAt', 'category', 'status', 'dustbinId', 'description',
+        'latitude', 'longitude', 'contactName', 'contactEmail', 'contactPhone',
+        'handledBy', 'handledAt',
+      ];
+      startCsv(reply, 'citizen-reports.csv', headers);
+      const cursor = CitizenReportModel.find({}).sort({ createdAt: -1 }).limit(20_000).lean().cursor();
+      await streamCursor(reply, cursor, headers, (r) => ({
         createdAt: r.createdAt,
         category: r.category,
         status: r.status,
@@ -125,23 +154,6 @@ export async function exportRoutes(app: FastifyInstance): Promise<void> {
         handledBy: r.handledBy ?? '',
         handledAt: r.handledAt ? new Date(r.handledAt).toISOString() : '',
       }));
-      reply
-        .type('text/csv; charset=utf-8')
-        .header('Content-Disposition', 'attachment; filename="citizen-reports.csv"');
-      return toCsv(rows, [
-        'createdAt',
-        'category',
-        'status',
-        'dustbinId',
-        'description',
-        'latitude',
-        'longitude',
-        'contactName',
-        'contactEmail',
-        'contactPhone',
-        'handledBy',
-        'handledAt',
-      ]);
     }
   );
 }

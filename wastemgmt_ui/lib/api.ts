@@ -138,39 +138,6 @@ export interface OptimizedRoute {
   unreachable: number;
 }
 
-interface ApiOptimizedRoute {
-  depot: { latitude: number; longitude: number };
-  stops: Array<{
-    dustbinId: string;
-    dustbinName: string;
-    latitude: number;
-    longitude: number;
-    fill: number;
-    zone?: string;
-  }>;
-  distanceKm: number;
-  estDurationMin: number;
-  generatedAt: string;
-}
-
-function normalizeOptimizedRoute(route: ApiOptimizedRoute | OptimizedRoute): OptimizedRoute {
-  if ("ordered" in route) return route;
-  return {
-    ordered: route.stops.map((stop) => ({
-      dustbinId: stop.dustbinId,
-      dustbinName: stop.dustbinName,
-      lat: stop.latitude,
-      lng: stop.longitude,
-      depth: stop.fill,
-      zone: stop.zone ?? "",
-    })),
-    totalDistanceKm: route.distanceKm,
-    estimatedMinutes: route.estDurationMin,
-    startedAt: route.generatedAt,
-    unreachable: 0,
-  };
-}
-
 export interface NotificationItem {
   _id: string;
   title: string;
@@ -209,17 +176,7 @@ export const analytics = {
 
 export const routes = {
   optimize: (opts: { startLat: number; startLng: number; fillThreshold?: number; zone?: string; limit?: number; avgKmh?: number; serviceMinPerStop?: number }) =>
-    api
-      .post<ApiOptimizedRoute | OptimizedRoute>('/routes/optimize', {
-        depotLat: opts.startLat,
-        depotLng: opts.startLng,
-        fillThreshold: opts.fillThreshold,
-        zone: opts.zone,
-        limit: opts.limit,
-        avgKmh: opts.avgKmh,
-        serviceMinPerStop: opts.serviceMinPerStop,
-      })
-      .then((r) => normalizeOptimizedRoute(r.data)),
+    api.post<OptimizedRoute>('/routes/optimize', opts).then((r) => r.data),
 };
 
 export const notifications = {
@@ -312,4 +269,177 @@ export const exports = {
     a.remove();
     URL.revokeObjectURL(url);
   },
+};
+
+// ── Generic paginated list wrapper ───────────────────────────────────────
+// Backend contract (see wastemgmt_api/src/utils/pagination.ts):
+//   - With `?page=N` the API returns `{ items, total, page, pageSize, totalPages }`
+//   - Without `page` it returns the legacy bare array (kept for the dashboard
+//     map and a handful of integration tests).
+// `paged()` always asks for the envelope; legacy callers keep using `api.get`.
+
+export interface Page<T> {
+  items: T[];
+  total: number;        // -1 when `skipTotal=1` was passed
+  page: number;
+  pageSize: number;
+  totalPages: number;   // -1 when total is -1
+}
+
+export interface PageOpts {
+  page: number;
+  pageSize: number;
+  skipTotal?: boolean;
+}
+
+/** Default size for every list page in the UI — matches the user requirement. */
+export const DEFAULT_PAGE_SIZE = 10;
+
+/** A loose record type used for the wrappers' filter shapes. The structural
+ *  intersections used by `dustbinsApi.page(opts)` etc. don't satisfy
+ *  `Record<string, unknown>` directly because TypeScript requires an explicit
+ *  index signature, so we widen at the helper boundary instead. */
+export async function paged<T>(
+  url: string,
+  opts: PageOpts & object
+): Promise<Page<T>> {
+  const { page, pageSize, skipTotal, ...rest } = opts as PageOpts & Record<string, unknown>;
+  const params: Record<string, unknown> = { ...rest, page, pageSize };
+  if (skipTotal) params.skipTotal = 1;
+  // Strip undefined so axios doesn't serialise `?foo=undefined`.
+  for (const k of Object.keys(params)) {
+    if (params[k] === undefined || params[k] === '' || params[k] === null) delete params[k];
+  }
+  const r = await api.get<Page<T> | T[]>(url, { params });
+  // Defensive: tolerate the legacy array shape if the backend was rolled back.
+  if (Array.isArray(r.data)) {
+    return { items: r.data, total: r.data.length, page, pageSize, totalPages: 1 };
+  }
+  return r.data;
+}
+
+// ── Strongly-typed paginated wrappers per resource ────────────────────────
+// These are what every list page in the UI now calls. They centralise the
+// query-param shape so the page components stay tiny.
+
+export interface DustbinRow {
+  _id?: string;
+  dustbinId: string;
+  dustbinName: string;
+  zone?: string;
+  latitude: number;
+  longitude: number;
+  online: boolean;
+  lastSeenAt?: string;
+  latest?: { depth?: number; gas?: number; humidity?: number; temperature?: number; timestamp?: string };
+}
+
+export interface AlertRow {
+  _id: string;
+  dustbinId: string;
+  type: 'BIN_FULL' | 'GAS_HIGH' | 'TEMP_HIGH' | 'OFFLINE' | 'CUSTOM';
+  severity: 'info' | 'warning' | 'critical';
+  message: string;
+  metric?: string;
+  value?: number;
+  threshold?: number;
+  acknowledged: boolean;
+  acknowledgedBy?: string;
+  acknowledgedAt?: string;
+  createdAt: string;
+}
+
+export interface UserRow {
+  _id: string;
+  username: string;
+  email?: string;
+  role: 'admin' | 'user';
+  isActive: boolean;
+  assignedDustbins?: string[];
+  createdAt?: string;
+}
+
+export interface AuditRow {
+  _id: string;
+  actor?: { sub?: string; username?: string; role?: string };
+  actorUsername?: string;
+  action: string;
+  resource: string;
+  resourceId?: string;
+  diff?: unknown;
+  ip?: string;
+  createdAt: string;
+}
+
+export interface RuleRow {
+  _id: string;
+  name: string;
+  enabled: boolean;
+  metric: 'depth' | 'gas' | 'humidity' | 'temperature';
+  operator: 'gt' | 'gte' | 'lt' | 'lte' | 'eq';
+  threshold: number;
+  severity: 'info' | 'warning' | 'critical';
+  alertType: string;
+  notifyEmail: boolean;
+  cooldownSec: number;
+  appliesToDustbinIds: string[];
+}
+
+export const dustbinsApi = {
+  page: (opts: PageOpts & { q?: string; zone?: string; status?: 'online' | 'offline' }) =>
+    paged<DustbinRow>('/dustbins', opts),
+  // Used by the dashboard map — still needs the full set.
+  all: () => api.get<DustbinRow[]>('/dustbins').then((r) => r.data),
+  remove: (id: string) => api.delete(`/dustbins/${encodeURIComponent(id)}`).then((r) => r.data),
+  upsert: (body: Partial<DustbinRow> & { dustbinId: string }) =>
+    api.post('/dustbins', body).then((r) => r.data),
+  update: (id: string, body: Partial<DustbinRow>) =>
+    api.put(`/dustbins/${encodeURIComponent(id)}`, body).then((r) => r.data),
+};
+
+export const alertsApi = {
+  page: (
+    opts: PageOpts & {
+      acknowledged?: 'true' | 'false';
+      severity?: 'info' | 'warning' | 'critical';
+      type?: string;
+      dustbinId?: string;
+    }
+  ) => paged<AlertRow>('/alerts', opts),
+  ack: (id: string) => api.post(`/alerts/${encodeURIComponent(id)}/ack`).then((r) => r.data),
+};
+
+export const usersApi = {
+  page: (opts: PageOpts & { q?: string; role?: 'admin' | 'user' }) => paged<UserRow>('/users', opts),
+  create: (body: { username: string; password: string; role: 'admin' | 'user'; email?: string; assignedDustbins?: string[] }) =>
+    api.post('/users', body).then((r) => r.data),
+  update: (id: string, body: Partial<UserRow>) =>
+    api.patch(`/users/${encodeURIComponent(id)}`, body).then((r) => r.data),
+  remove: (id: string) => api.delete(`/users/${encodeURIComponent(id)}`).then((r) => r.data),
+  resetPassword: (id: string, newPassword?: string) =>
+    api.post<{ newPassword: string }>(`/users/${encodeURIComponent(id)}/reset-password`, { newPassword }).then((r) => r.data),
+};
+
+export const auditApi = {
+  page: (opts: PageOpts & { resource?: string; action?: string; q?: string }) =>
+    paged<AuditRow>('/audit', opts),
+  remove: (id: string) => api.delete(`/audit/${encodeURIComponent(id)}`).then((r) => r.data),
+};
+
+export const rulesApi = {
+  page: (opts: PageOpts & { metric?: string; enabled?: 'true' | 'false' }) =>
+    paged<RuleRow>('/rules', opts),
+  create: (body: Partial<RuleRow>) => api.post('/rules', body).then((r) => r.data),
+  update: (id: string, body: Partial<RuleRow>) =>
+    api.put(`/rules/${encodeURIComponent(id)}`, body).then((r) => r.data),
+  remove: (id: string) => api.delete(`/rules/${encodeURIComponent(id)}`).then((r) => r.data),
+};
+
+export const notificationsApi = {
+  page: (opts: PageOpts & { unread?: 'true' | 'false' }) => paged<NotificationItem>('/notifications', opts),
+};
+
+export const reportsApi = {
+  page: (opts: PageOpts & { status?: CitizenReport['status']; category?: string; q?: string }) =>
+    paged<CitizenReport>('/citizen-reports', opts),
 };

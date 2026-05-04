@@ -22,6 +22,10 @@ export interface DashboardKpis {
 }
 
 export class AnalyticsService {
+  /**
+   * @param tenantId  Caller's tenant. Always pass the authenticated user's tenant —
+   *                  the default exists only for tests / single-tenant deployments.
+   */
   static async dashboard(tenantId = 'default'): Promise<DashboardKpis> {
     const [dustbins, openAlerts, recentAlerts, citizenOpen] = await Promise.all([
       DustbinModel.find({ tenantId, isActive: true })

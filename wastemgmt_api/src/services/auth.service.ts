@@ -1,10 +1,20 @@
-import { createHash, randomBytes } from 'crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { UserModel, type UserDoc } from '../models/User.js';
 import { hashPassword, verifyPassword } from '../utils/password.js';
 import { encryptString } from '../utils/crypto.js';
 import { config } from '../config.js';
 
 export const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
+
+/** Constant-time hex-string comparison. Returns false if lengths differ. */
+function safeHexEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
+  } catch {
+    return false;
+  }
+}
 
 const encPassword = (plain: string): string => encryptString(plain, config.PAYLOAD_ENC_KEY);
 
@@ -54,7 +64,8 @@ export class AuthService {
 
   static async refreshTokenMatches(userId: string, token: string): Promise<boolean> {
     const u = await UserModel.findById(userId).select('refreshTokenHash').lean();
-    return !!u?.refreshTokenHash && u.refreshTokenHash === sha256(token);
+    if (!u?.refreshTokenHash) return false;
+    return safeHexEqual(u.refreshTokenHash, sha256(token));
   }
 
   static async resetPassword(userId: string, newPassword: string): Promise<void> {

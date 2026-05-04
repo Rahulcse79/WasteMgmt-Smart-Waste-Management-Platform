@@ -24,6 +24,12 @@ const DustbinSchema = new Schema(
 
     latitude: { type: Number, required: true },
     longitude: { type: Number, required: true },
+    // GeoJSON shadow of (longitude, latitude) so we can use $near / $geoWithin.
+    // Maintained by the upsert pre-save hook below; never set this directly.
+    location: {
+      type: { type: String, enum: ['Point'], default: 'Point' },
+      coordinates: { type: [Number], default: [0, 0] }, // [lng, lat]
+    },
 
     // Recent rolling windows (bounded to keep document size sane)
     depth: { type: [ReadingSchema], default: [] },
@@ -49,9 +55,64 @@ const DustbinSchema = new Schema(
   { timestamps: true }
 );
 
-// Geospatial index for map / proximity queries
+// Geospatial indexes
+// 2dsphere on the GeoJSON `location` powers $near / $geoWithin / radius queries.
+// The legacy {latitude:1, longitude:1} compound index stays for cheap bbox scans
+// from the existing dashboard code.
+DustbinSchema.index({ location: '2dsphere' });
 DustbinSchema.index({ latitude: 1, longitude: 1 });
 DustbinSchema.index({ tenantId: 1, zone: 1 });
+// Covers the admin paginated list (filter on isActive[+zone/online], sort on dustbinId).
+DustbinSchema.index({ isActive: 1, dustbinId: 1 });
+DustbinSchema.index({ isActive: 1, online: 1, dustbinId: 1 });
+
+// Keep the GeoJSON shadow in sync with latitude/longitude on every write.
+// Doing it here means callers (DustbinService.upsert, route PUT) don't need
+// to know the GeoJSON shape exists.
+DustbinSchema.pre('save', function syncLocation(next) {
+  if (this.isModified('latitude') || this.isModified('longitude') || this.isNew) {
+    this.set('location', { type: 'Point', coordinates: [this.longitude, this.latitude] });
+  }
+  next();
+});
+
+DustbinSchema.pre('findOneAndUpdate', function syncLocationOnUpdate(next) {
+  const update = this.getUpdate() as Record<string, unknown> | null;
+  if (!update) return next();
+  const $set = (update.$set as Record<string, unknown> | undefined) ?? update;
+  const lat = $set.latitude as number | undefined;
+  const lng = $set.longitude as number | undefined;
+  if (typeof lat === 'number' || typeof lng === 'number') {
+    // We only have one side of the pair in the update. Pull the other from
+    // the document so we never end up with a half-updated GeoJSON point.
+    void this.model
+      .findOne(this.getQuery())
+      .select('latitude longitude')
+      .lean()
+      .then((existing) => {
+        const existingDoc = (Array.isArray(existing) ? existing[0] : existing) as
+          | { latitude?: number; longitude?: number }
+          | null;
+        const finalLat = typeof lat === 'number' ? lat : existingDoc?.latitude;
+        const finalLng = typeof lng === 'number' ? lng : existingDoc?.longitude;
+        if (typeof finalLat === 'number' && typeof finalLng === 'number') {
+          if (update.$set) {
+            (update.$set as Record<string, unknown>).location = {
+              type: 'Point',
+              coordinates: [finalLng, finalLat],
+            };
+          } else {
+            update.location = { type: 'Point', coordinates: [finalLng, finalLat] };
+          }
+          this.setUpdate(update);
+        }
+        next();
+      })
+      .catch(next);
+    return;
+  }
+  next();
+});
 
 export type DustbinDoc = HydratedDocument<InferSchemaType<typeof DustbinSchema>>;
 export const DustbinModel = model('Dustbin', DustbinSchema);

@@ -1,34 +1,26 @@
 "use client";
-import { useEffect, useState } from "react";
-import { reports, type CitizenReport, exports as ex } from "@/lib/api";
+import { reportsApi, reports as reportsAdmin, exports as ex, type CitizenReport } from "@/lib/api";
+import { usePaginatedList } from "@/lib/usePaginatedList";
 import { Card, CardBody, CardHeader, CardTitle, Chip, EmptyState, Skeleton } from "@/components/ui/Primitives";
+import { Pagination } from "@/components/ui/Pagination";
 import { FileTextIcon, DownloadIcon } from "@/components/IconsExtended";
 
 const STATUSES: CitizenReport["status"][] = ["NEW", "TRIAGED", "RESOLVED", "REJECTED"];
 
+type ReportFilters = { status?: CitizenReport["status"]; category?: string; q?: string };
+
 export default function AdminReportsPage(): React.ReactElement {
-  const [items, setItems] = useState<CitizenReport[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<CitizenReport["status"] | "ALL">("NEW");
-  const [err, setErr] = useState<string | null>(null);
-
-  const load = async () => {
-    setLoading(true); setErr(null);
-    try {
-      setItems(await reports.list({ status: filter === "ALL" ? undefined : filter, limit: 200 }));
-    } catch (e) {
-      const ex = e as { response?: { data?: { error?: string } } };
-      setErr(ex?.response?.data?.error ?? "Failed to load reports");
-    } finally { setLoading(false); }
-  };
-
-  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [filter]);
+  const list = usePaginatedList<CitizenReport, ReportFilters>({
+    fetcher: (args) => reportsApi.page(args),
+    initialFilters: { status: "NEW" },
+  });
 
   const updateStatus = async (id: string, s: CitizenReport["status"]) => {
-    const prev = items;
-    setItems((arr) => arr.map((r) => (r._id === id ? { ...r, status: s } : r)));
-    try { await reports.update(id, s); } catch { setItems(prev); }
+    await reportsAdmin.update(id, s);
+    list.refresh();
   };
+
+  const activeStatus = list.filters.status ?? "ALL";
 
   return (
     <div className="space-y-4">
@@ -42,28 +34,38 @@ export default function AdminReportsPage(): React.ReactElement {
         </div>
       </div>
 
-      <div className="flex items-center gap-1 flex-wrap">
+      <div className="flex items-center gap-2 flex-wrap">
         {(["ALL", ...STATUSES] as const).map((s) => (
-          <button key={s} onClick={() => setFilter(s)} className={`btn btn-sm ${filter === s ? "btn-primary" : "btn-ghost"}`}>
+          <button
+            key={s}
+            onClick={() => list.setFilters((f) => ({ ...f, status: s === "ALL" ? undefined : s }))}
+            className={`btn btn-sm ${activeStatus === s ? "btn-primary" : "btn-ghost"}`}
+          >
             {s}
           </button>
         ))}
+        <input
+          placeholder="Search description / contact / dustbin…"
+          value={list.filters.q ?? ""}
+          onChange={(e) => list.setFilters((f) => ({ ...f, q: e.target.value || undefined }))}
+          className="bg-[var(--panel-2)] border border-[var(--border)] rounded px-3 py-1.5 text-xs w-72"
+        />
       </div>
 
-      {err ? <div className="chip danger">{err}</div> : null}
+      {list.error ? <div className="chip danger">{list.error}</div> : null}
 
       <Card>
-        <CardHeader><CardTitle>Inbox</CardTitle><span className="chip">{items.length}</span></CardHeader>
+        <CardHeader><CardTitle>Inbox</CardTitle></CardHeader>
         <CardBody className="p-0">
-          {loading ? (
+          {list.initialLoading ? (
             <div className="p-4 space-y-2">
               {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-20 w-full" />)}
             </div>
-          ) : items.length === 0 ? (
+          ) : list.items.length === 0 ? (
             <EmptyState title="No reports for this filter" icon={<FileTextIcon />} />
           ) : (
-            <ul className="divide-y" style={{ borderColor: "var(--border)" }}>
-              {items.map((r) => (
+            <ul className={`divide-y ${list.loading ? "opacity-70 transition" : "transition"}`} style={{ borderColor: "var(--border)" }}>
+              {list.items.map((r) => (
                 <li key={r._id} className="px-5 py-4">
                   <div className="flex items-start gap-3 flex-wrap">
                     <div className="flex-1 min-w-0">
@@ -78,8 +80,13 @@ export default function AdminReportsPage(): React.ReactElement {
                       <div className="text-[11px] mt-1 flex items-center gap-3 flex-wrap" style={{ color: "var(--fg-subtle)" }}>
                         <span>{new Date(r.createdAt).toLocaleString()}</span>
                         {r.lat != null && r.lng != null ? (
-                          <a href={`https://www.google.com/maps?q=${r.lat},${r.lng}`} target="_blank" rel="noopener noreferrer"
-                             className="hover:underline" style={{ color: "var(--accent)" }}>
+                          <a
+                            href={`https://www.google.com/maps?q=${r.lat},${r.lng}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="hover:underline"
+                            style={{ color: "var(--accent)" }}
+                          >
                             {r.lat.toFixed(4)}, {r.lng.toFixed(4)}
                           </a>
                         ) : null}
@@ -96,6 +103,14 @@ export default function AdminReportsPage(): React.ReactElement {
               ))}
             </ul>
           )}
+          <Pagination
+            page={list.page}
+            pageSize={list.pageSize}
+            total={list.total}
+            loading={list.loading}
+            onPageChange={list.setPage}
+            onPageSizeChange={list.setPageSize}
+          />
         </CardBody>
       </Card>
     </div>

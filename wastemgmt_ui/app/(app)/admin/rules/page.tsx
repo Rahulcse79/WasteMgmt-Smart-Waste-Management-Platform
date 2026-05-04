@@ -1,21 +1,10 @@
 "use client";
-import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { useState } from "react";
+import { rulesApi, type RuleRow } from "@/lib/api";
+import { usePaginatedList } from "@/lib/usePaginatedList";
+import { Pagination } from "@/components/ui/Pagination";
 
-interface Rule {
-  _id: string;
-  name: string;
-  enabled: boolean;
-  metric: "depth" | "gas" | "humidity" | "temperature";
-  operator: "gt" | "gte" | "lt" | "lte" | "eq";
-  threshold: number;
-  severity: "info" | "warning" | "critical";
-  alertType: string;
-  notifyEmail: boolean;
-  cooldownSec: number;
-}
-
-const empty: Omit<Rule, "_id"> = {
+const empty: Omit<RuleRow, "_id" | "appliesToDustbinIds"> = {
   name: "",
   enabled: true,
   metric: "depth",
@@ -27,35 +16,38 @@ const empty: Omit<Rule, "_id"> = {
   cooldownSec: 300,
 };
 
+type RuleFilters = { metric?: string; enabled?: "true" | "false" };
+
 export default function AdminRulesPage(): React.ReactElement {
-  const [rules, setRules] = useState<Rule[]>([]);
   const [form, setForm] = useState(empty);
+  const [err, setErr] = useState<string | null>(null);
 
-  async function refresh(): Promise<void> {
-    const r = await api.get<Rule[]>("/rules");
-    setRules(r.data);
-  }
-
-  useEffect(() => {
-    void refresh();
-  }, []);
+  const list = usePaginatedList<RuleRow, RuleFilters>({
+    fetcher: (args) => rulesApi.page(args),
+  });
 
   async function create(e: React.FormEvent): Promise<void> {
     e.preventDefault();
-    await api.post("/rules", form);
-    setForm(empty);
-    await refresh();
+    setErr(null);
+    try {
+      await rulesApi.create(form);
+      setForm(empty);
+      list.refresh();
+    } catch (e) {
+      const x = e as { response?: { data?: { error?: string } } };
+      setErr(x?.response?.data?.error ?? "Create failed");
+    }
   }
 
-  async function toggle(r: Rule): Promise<void> {
-    await api.put(`/rules/${r._id}`, { enabled: !r.enabled });
-    await refresh();
+  async function toggle(r: RuleRow): Promise<void> {
+    await rulesApi.update(r._id, { enabled: !r.enabled });
+    list.refresh();
   }
 
-  async function remove(r: Rule): Promise<void> {
+  async function remove(r: RuleRow): Promise<void> {
     if (!confirm(`Delete rule "${r.name}"?`)) return;
-    await api.delete(`/rules/${r._id}`);
-    await refresh();
+    await rulesApi.remove(r._id);
+    list.refresh();
   }
 
   return (
@@ -75,7 +67,7 @@ export default function AdminRulesPage(): React.ReactElement {
         />
         <select
           value={form.metric}
-          onChange={(e) => setForm({ ...form, metric: e.target.value as Rule["metric"] })}
+          onChange={(e) => setForm({ ...form, metric: e.target.value as RuleRow["metric"] })}
           className="bg-[var(--panel-2)] border border-[var(--border)] rounded px-2 py-2"
         >
           <option value="depth">depth</option>
@@ -85,7 +77,7 @@ export default function AdminRulesPage(): React.ReactElement {
         </select>
         <select
           value={form.operator}
-          onChange={(e) => setForm({ ...form, operator: e.target.value as Rule["operator"] })}
+          onChange={(e) => setForm({ ...form, operator: e.target.value as RuleRow["operator"] })}
           className="bg-[var(--panel-2)] border border-[var(--border)] rounded px-2 py-2"
         >
           <option value="gt">&gt;</option>
@@ -105,7 +97,7 @@ export default function AdminRulesPage(): React.ReactElement {
         />
         <select
           value={form.severity}
-          onChange={(e) => setForm({ ...form, severity: e.target.value as Rule["severity"] })}
+          onChange={(e) => setForm({ ...form, severity: e.target.value as RuleRow["severity"] })}
           className="bg-[var(--panel-2)] border border-[var(--border)] rounded px-2 py-2"
         >
           <option value="info">info</option>
@@ -126,7 +118,37 @@ export default function AdminRulesPage(): React.ReactElement {
           />
           Send email when this rule fires
         </label>
+        {err ? <div className="md:col-span-7 text-rose-300 text-xs">{err}</div> : null}
       </form>
+
+      {/* Server-side filters */}
+      <div className="flex flex-wrap items-center gap-3">
+        <select
+          value={list.filters.metric ?? ""}
+          onChange={(e) => list.setFilters((f) => ({ ...f, metric: e.target.value || undefined }))}
+          className="bg-[var(--panel-2)] border border-[var(--border)] rounded px-3 py-2 text-sm"
+        >
+          <option value="">All metrics</option>
+          <option value="depth">depth</option>
+          <option value="gas">gas</option>
+          <option value="humidity">humidity</option>
+          <option value="temperature">temperature</option>
+        </select>
+        <select
+          value={list.filters.enabled ?? ""}
+          onChange={(e) =>
+            list.setFilters((f) => ({
+              ...f,
+              enabled: (e.target.value || undefined) as "true" | "false" | undefined,
+            }))
+          }
+          className="bg-[var(--panel-2)] border border-[var(--border)] rounded px-3 py-2 text-sm"
+        >
+          <option value="">All states</option>
+          <option value="true">Enabled</option>
+          <option value="false">Disabled</option>
+        </select>
+      </div>
 
       <div className="rounded-xl bg-[var(--panel)] border border-[var(--border)] overflow-hidden">
         <table className="w-full text-sm">
@@ -141,38 +163,45 @@ export default function AdminRulesPage(): React.ReactElement {
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--border)]">
-            {rules.map((r) => (
-              <tr key={r._id}>
-                <td className="px-4 py-2 text-white">{r.name}</td>
-                <td className="px-4 py-2 text-zinc-200">
-                  {r.metric} {r.operator} {r.threshold}
-                </td>
-                <td className="px-4 py-2 text-zinc-200">{r.severity}</td>
-                <td className="px-4 py-2 text-zinc-300">{r.notifyEmail ? "✓" : "—"}</td>
-                <td className="px-4 py-2 text-center">
-                  <button
-                    onClick={() => toggle(r)}
-                    className={`text-xs px-2 py-1 rounded ${r.enabled ? "bg-emerald-500/20 text-emerald-300" : "bg-zinc-500/20 text-zinc-300"}`}
-                  >
-                    {r.enabled ? "ON" : "OFF"}
-                  </button>
-                </td>
-                <td className="px-4 py-2 text-center">
-                  <button onClick={() => remove(r)} className="text-xs text-rose-300 hover:text-rose-100">
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {rules.length === 0 && (
-              <tr>
-                <td colSpan={6} className="text-center text-zinc-500 py-6">
-                  No rules defined.
-                </td>
-              </tr>
+            {list.initialLoading ? (
+              <tr><td colSpan={6} className="text-center text-zinc-500 py-6">Loading…</td></tr>
+            ) : list.items.length === 0 ? (
+              <tr><td colSpan={6} className="text-center text-zinc-500 py-6">No rules.</td></tr>
+            ) : (
+              list.items.map((r) => (
+                <tr key={r._id} className={list.loading ? "opacity-60 transition" : "transition"}>
+                  <td className="px-4 py-2 text-white">{r.name}</td>
+                  <td className="px-4 py-2 text-zinc-200">
+                    {r.metric} {r.operator} {r.threshold}
+                  </td>
+                  <td className="px-4 py-2 text-zinc-200">{r.severity}</td>
+                  <td className="px-4 py-2 text-zinc-300">{r.notifyEmail ? "✓" : "—"}</td>
+                  <td className="px-4 py-2 text-center">
+                    <button
+                      onClick={() => toggle(r)}
+                      className={`text-xs px-2 py-1 rounded ${r.enabled ? "bg-emerald-500/20 text-emerald-300" : "bg-zinc-500/20 text-zinc-300"}`}
+                    >
+                      {r.enabled ? "ON" : "OFF"}
+                    </button>
+                  </td>
+                  <td className="px-4 py-2 text-center">
+                    <button onClick={() => remove(r)} className="text-xs text-rose-300 hover:text-rose-100">
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))
             )}
           </tbody>
         </table>
+        <Pagination
+          page={list.page}
+          pageSize={list.pageSize}
+          total={list.total}
+          loading={list.loading}
+          onPageChange={list.setPage}
+          onPageSizeChange={list.setPageSize}
+        />
       </div>
     </div>
   );

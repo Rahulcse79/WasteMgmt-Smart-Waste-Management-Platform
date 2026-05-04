@@ -6,6 +6,7 @@
  * Tier 2 (strict, opt-in via env STRICT_PASSWORD_POLICY=1): ≥12 + symbol.
  */
 import { z } from 'zod';
+import { config } from '../config.js';
 
 const COMMON_DENYLIST = new Set([
   'password',
@@ -25,7 +26,7 @@ const COMMON_DENYLIST = new Set([
   'coraltele',
 ]);
 
-const strict = process.env.STRICT_PASSWORD_POLICY === '1';
+const strict = config.STRICT_PASSWORD_POLICY === true;
 
 export interface PasswordPolicyResult {
   ok: boolean;

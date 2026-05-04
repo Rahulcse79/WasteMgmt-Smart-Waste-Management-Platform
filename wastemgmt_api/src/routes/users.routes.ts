@@ -9,6 +9,7 @@ import { validateBody } from '../middleware/validate.js';
 import { passwordSchema } from '../utils/passwordPolicy.js';
 import { wsHub } from '../services/ws.service.js';
 import { config } from '../config.js';
+import { parsePage, buildEnvelope } from '../utils/pagination.js';
 
 const CreateUserSchema = z.object({
   username: z.string().trim().min(2).max(64).regex(/^[a-z0-9_.-]+$/i, 'invalid_username'),
@@ -33,11 +34,33 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
   app.get(
     '/users',
     { preHandler: [requireAuth, requireRole('admin')] },
-    async () =>
-      UserModel.find({ isActive: true })
-        .select('-passwordHash -refreshTokenHash')
-        .sort({ username: 1 })
-        .lean()
+    async (req) => {
+      const q = req.query as { q?: string; role?: string };
+      const filter: Record<string, unknown> = { isActive: true };
+      if (q.role === 'admin' || q.role === 'user') filter.role = q.role;
+      if (q.q && q.q.trim()) {
+        const safe = q.q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const rx = new RegExp(safe, 'i');
+        filter.$or = [{ username: rx }, { email: rx }];
+      }
+      const p = parsePage(req);
+      if (p.legacy) {
+        return UserModel.find(filter)
+          .select('-passwordHash -refreshTokenHash')
+          .sort({ username: 1 })
+          .lean();
+      }
+      const [items, total] = await Promise.all([
+        UserModel.find(filter)
+          .select('-passwordHash -refreshTokenHash')
+          .sort({ username: 1 })
+          .skip(p.skip)
+          .limit(p.pageSize)
+          .lean(),
+        p.skipTotal ? Promise.resolve(-1) : UserModel.countDocuments(filter),
+      ]);
+      return buildEnvelope(items, total, p);
+    }
   );
 
   app.post(
@@ -77,6 +100,15 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [requireAuth, requireRole('admin'), validateBody(UpdateUserSchema)] },
     async (req, reply) => {
       const body = req.body as z.infer<typeof UpdateUserSchema>;
+      // Self-protection: don't let an admin demote or deactivate themselves.
+      if (req.user!.sub === req.params.id) {
+        if (body.role !== undefined && body.role !== 'admin') {
+          return reply.code(400).send({ error: 'cannot demote your own account' });
+        }
+        if (body.isActive === false) {
+          return reply.code(400).send({ error: 'cannot deactivate your own account' });
+        }
+      }
       const update: Record<string, unknown> = {};
       if (body.email !== undefined) update.email = body.email.toLowerCase();
       if (body.role !== undefined) update.role = body.role;
@@ -89,6 +121,11 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
       // Live-refresh dustbin scoping for any active WS sessions for this user.
       if (body.assignedDustbins !== undefined) {
         wsHub.refreshAssignment(req.params.id, body.assignedDustbins);
+      }
+      // If the account was deactivated, also tear down its sockets immediately.
+      if (body.isActive === false) {
+        wsHub.refreshAssignment(req.params.id, []);
+        wsHub.closeUserSessions(req.params.id);
       }
       await AuditService.log({
         actor: req.user,
@@ -132,8 +169,16 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
   app.delete<{ Params: { id: string } }>(
     '/users/:id',
     { preHandler: [requireAuth, requireRole('admin')] },
-    async (req) => {
-      await UserModel.updateOne({ _id: req.params.id }, { $set: { isActive: false } });
+    async (req, reply) => {
+      // Self-protection: an admin must not be able to lock themselves out.
+      if (req.user!.sub === req.params.id) {
+        return reply.code(400).send({ error: 'cannot delete your own account' });
+      }
+      await UserModel.updateOne({ _id: req.params.id }, { $set: { isActive: false, refreshTokenHash: null } });
+      // Drop dustbin scope on any live WS sessions and close them so the user
+      // is forced to re-auth (which will fail because isActive=false).
+      wsHub.refreshAssignment(req.params.id, []);
+      wsHub.closeUserSessions(req.params.id);
       await AuditService.log({
         actor: req.user,
         action: 'USER_DELETE',

@@ -2,7 +2,7 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { analytics, api, type DashboardKpis } from "@/lib/api";
+import { analytics, dustbinsApi, type DashboardKpis } from "@/lib/api";
 import { useLiveSocket } from "@/lib/socket";
 import { isDustbinActive, latestOf, type Dustbin } from "@/lib/types";
 import { useT } from "@/lib/i18n";
@@ -52,7 +52,7 @@ export default function DashboardPage(): React.ReactElement {
     setErr(null);
     try {
       const [binsResult, kpisResult] = await Promise.allSettled([
-        api.get<Dustbin[]>("/dustbins").then((r) => r.data),
+        dustbinsApi.all() as Promise<Dustbin[]>,
         analytics.dashboard(),
       ]);
 

@@ -1,7 +1,8 @@
 "use client";
-import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
-import type { Dustbin } from "@/lib/types";
+import { useState } from "react";
+import { dustbinsApi, type DustbinRow } from "@/lib/api";
+import { usePaginatedList } from "@/lib/usePaginatedList";
+import { Pagination } from "@/components/ui/Pagination";
 
 interface FormState {
   dustbinId: string;
@@ -13,27 +14,23 @@ interface FormState {
 
 const empty: FormState = { dustbinId: "", dustbinName: "", latitude: "", longitude: "", zone: "" };
 
+type DustbinFilters = { q?: string; status?: "online" | "offline" };
+
 export default function AdminDustbinsPage(): React.ReactElement {
-  const [items, setItems] = useState<Dustbin[]>([]);
   const [form, setForm] = useState<FormState>(empty);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  async function refresh(): Promise<void> {
-    const r = await api.get<Dustbin[]>("/dustbins");
-    setItems(r.data);
-  }
-
-  useEffect(() => {
-    void refresh();
-  }, []);
+  const list = usePaginatedList<DustbinRow, DustbinFilters>({
+    fetcher: (args) => dustbinsApi.page(args),
+  });
 
   async function submit(e: React.FormEvent): Promise<void> {
     e.preventDefault();
     setBusy(true);
     setErr(null);
     try {
-      await api.post("/dustbins", {
+      await dustbinsApi.upsert({
         dustbinId: form.dustbinId,
         dustbinName: form.dustbinName,
         latitude: Number(form.latitude),
@@ -41,7 +38,7 @@ export default function AdminDustbinsPage(): React.ReactElement {
         zone: form.zone,
       });
       setForm(empty);
-      await refresh();
+      list.refresh();
     } catch (e) {
       const x = e as { response?: { data?: { error?: string } } };
       setErr(x?.response?.data?.error ?? "Save failed");
@@ -52,8 +49,8 @@ export default function AdminDustbinsPage(): React.ReactElement {
 
   async function remove(id: string): Promise<void> {
     if (!confirm(`Delete ${id}?`)) return;
-    await api.delete(`/dustbins/${encodeURIComponent(id)}`);
-    await refresh();
+    await dustbinsApi.remove(id);
+    list.refresh();
   }
 
   return (
@@ -114,6 +111,30 @@ export default function AdminDustbinsPage(): React.ReactElement {
         </div>
       </form>
 
+      {/* Filters: server-side search + status */}
+      <div className="flex flex-wrap items-center gap-3">
+        <input
+          placeholder="Search ID / name / zone…"
+          value={list.filters.q ?? ""}
+          onChange={(e) => list.setFilters((f) => ({ ...f, q: e.target.value }))}
+          className="bg-[var(--panel-2)] border border-[var(--border)] rounded px-3 py-2 text-sm w-72"
+        />
+        <select
+          value={list.filters.status ?? ""}
+          onChange={(e) =>
+            list.setFilters((f) => ({
+              ...f,
+              status: (e.target.value || undefined) as "online" | "offline" | undefined,
+            }))
+          }
+          className="bg-[var(--panel-2)] border border-[var(--border)] rounded px-3 py-2 text-sm"
+        >
+          <option value="">All statuses</option>
+          <option value="online">Online</option>
+          <option value="offline">Offline</option>
+        </select>
+      </div>
+
       <div className="rounded-xl bg-[var(--panel)] border border-[var(--border)] overflow-hidden">
         <table className="w-full text-sm">
           <thead>
@@ -127,33 +148,53 @@ export default function AdminDustbinsPage(): React.ReactElement {
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--border)]">
-            {items.map((d) => (
-              <tr key={d.dustbinId}>
-                <td className="px-4 py-2 text-white">{d.dustbinId}</td>
-                <td className="px-4 py-2 text-zinc-200">{d.dustbinName}</td>
-                <td className="px-4 py-2 text-zinc-300">
-                  {d.latitude.toFixed(6)}, {d.longitude.toFixed(6)}
-                </td>
-                <td className="px-4 py-2 text-zinc-300">{d.zone || "—"}</td>
-                <td className="px-4 py-2 text-center">
-                  <span
-                    className={`inline-block h-2 w-2 rounded-full ${
-                      d.online ? "bg-emerald-400" : "bg-zinc-500"
-                    }`}
-                  />
-                </td>
-                <td className="px-4 py-2 text-center">
-                  <button
-                    onClick={() => remove(d.dustbinId)}
-                    className="text-xs text-rose-300 hover:text-rose-100"
-                  >
-                    Delete
-                  </button>
+            {list.initialLoading ? (
+              <tr>
+                <td colSpan={6} className="px-4 py-8 text-center text-zinc-400">Loading…</td>
+              </tr>
+            ) : list.items.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="px-4 py-8 text-center text-zinc-400">
+                  {list.error ?? "No dustbins match the current filters."}
                 </td>
               </tr>
-            ))}
+            ) : (
+              list.items.map((d) => (
+                <tr key={d.dustbinId} className={list.loading ? "opacity-60 transition" : "transition"}>
+                  <td className="px-4 py-2 text-white">{d.dustbinId}</td>
+                  <td className="px-4 py-2 text-zinc-200">{d.dustbinName}</td>
+                  <td className="px-4 py-2 text-zinc-300">
+                    {d.latitude.toFixed(6)}, {d.longitude.toFixed(6)}
+                  </td>
+                  <td className="px-4 py-2 text-zinc-300">{d.zone || "—"}</td>
+                  <td className="px-4 py-2 text-center">
+                    <span
+                      className={`inline-block h-2 w-2 rounded-full ${
+                        d.online ? "bg-emerald-400" : "bg-zinc-500"
+                      }`}
+                    />
+                  </td>
+                  <td className="px-4 py-2 text-center">
+                    <button
+                      onClick={() => remove(d.dustbinId)}
+                      className="text-xs text-rose-300 hover:text-rose-100"
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
+        <Pagination
+          page={list.page}
+          pageSize={list.pageSize}
+          total={list.total}
+          loading={list.loading}
+          onPageChange={list.setPage}
+          onPageSizeChange={list.setPageSize}
+        />
       </div>
     </div>
   );

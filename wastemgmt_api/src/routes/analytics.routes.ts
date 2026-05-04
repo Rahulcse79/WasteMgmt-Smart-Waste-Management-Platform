@@ -2,9 +2,15 @@ import type { FastifyInstance } from 'fastify';
 import { AnalyticsService } from '../services/analytics.service.js';
 import { requireAuth } from '../middleware/auth.js';
 
+// Centralised mapping from authenticated user → tenant. Single-tenant for now;
+// keep the indirection so a future migration only changes one line.
+function tenantOf(_user: { sub: string; role: string }): string {
+  return 'default';
+}
+
 export async function analyticsRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/analytics/dashboard', { preHandler: requireAuth }, async () =>
-    AnalyticsService.dashboard()
+  app.get('/analytics/dashboard', { preHandler: requireAuth }, async (req) =>
+    AnalyticsService.dashboard(tenantOf(req.user!))
   );
 
   app.get<{ Params: { id: string } }>(

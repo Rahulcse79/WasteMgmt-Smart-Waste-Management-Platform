@@ -102,6 +102,24 @@ class WSHub {
       if (sub.user.sub === userId) sub.allowedDustbins = new Set(allowed);
     }
   }
+
+  /**
+   * Force-close every active socket owned by `userId`. Used when an account
+   * is deactivated/deleted so the user can't keep streaming live data.
+   */
+  closeUserSessions(userId: string): number {
+    let closed = 0;
+    for (const sub of this.subs) {
+      if (sub.user.sub !== userId) continue;
+      try {
+        sub.socket.close(1008, 'account_disabled');
+        closed++;
+      } catch (err) {
+        logger.warn({ err }, 'WS forced-close failed');
+      }
+    }
+    return closed;
+  }
 }
 
 export const wsHub = new WSHub();

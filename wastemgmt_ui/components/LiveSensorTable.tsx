@@ -6,11 +6,8 @@
  * paging. Designed for scale: it never SELECT *'s the full collection — every
  * fetch is bounded by `pageSize` and uses the keyset cursor returned by the API.
  *
- * Default mode = "recent": polls /sensor-readings/recent every `pollMs` and
- * shows the latest N rows in real time.
- *
- * When the user opens filters, mode flips to "filtered": single-shot
- * cursor-paginated query against /sensor-readings.
+ * Uses cursor-paginated /sensor-readings for both default and filtered views.
+ * Page size stays bounded (default 10), with explicit Prev/Next controls.
  *
  * Live WebSocket pushes also splice into the recent view so the table updates
  * without waiting for the next poll.
@@ -78,20 +75,7 @@ export function LiveSensorTable({
     return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
   };
 
-  const loadRecent = useCallback(async () => {
-    try {
-      setError(null);
-      const rows = await sensorReadings.recent({ limit: pageSize });
-      setItems(rows);
-    } catch (e) {
-      const x = e as { response?: { data?: { error?: string } }; message?: string };
-      setError(x?.response?.data?.error ?? x?.message ?? "Failed to load");
-    } finally {
-      setLoading(false);
-    }
-  }, [pageSize]);
-
-  const loadFiltered = useCallback(
+  const loadPage = useCallback(
     async (cursor: string | null) => {
       try {
         setLoading(true);
@@ -125,23 +109,19 @@ export function LiveSensorTable({
     setCursors([null]);
     setPageIdx(0);
     setNextCursor(null);
-    if (isFiltered) {
-      void loadFiltered(null);
-    } else {
-      void loadRecent();
-    }
-  }, [isFiltered, bin, metric, from, to, pageSize, loadFiltered, loadRecent]);
+    void loadPage(null);
+  }, [isFiltered, bin, metric, from, to, pageSize, loadPage]);
 
-  // Poll the "recent" feed at pollMs while no filters are applied.
+  // Poll only the first unfiltered page for live behavior with minimal load.
   useEffect(() => {
-    if (isFiltered) return;
-    const id = window.setInterval(() => void loadRecent(), pollMs);
+    if (isFiltered || pageIdx !== 0) return;
+    const id = window.setInterval(() => void loadPage(null), pollMs);
     return () => window.clearInterval(id);
-  }, [isFiltered, pollMs, loadRecent]);
+  }, [isFiltered, pageIdx, pollMs, loadPage]);
 
   // Live splicing — only meaningful in "recent" mode.
   useLiveSocket(["dustbin:*"], (e) => {
-    if (isFiltered) return;
+    if (isFiltered || pageIdx !== 0) return;
     if (e.event !== "reading") return;
     const p = e.payload as {
       dustbinId: string;
@@ -171,13 +151,13 @@ export function LiveSensorTable({
     const newCursors = [...cursors.slice(0, pageIdx + 1), nextCursor];
     setCursors(newCursors);
     setPageIdx(pageIdx + 1);
-    void loadFiltered(nextCursor);
+    void loadPage(nextCursor);
   }
   function prevPage(): void {
     if (pageIdx === 0) return;
     const newIdx = pageIdx - 1;
     setPageIdx(newIdx);
-    void loadFiltered(cursors[newIdx] ?? null);
+    void loadPage(cursors[newIdx] ?? null);
   }
   function clearFilters(): void {
     setBin("");
@@ -191,12 +171,12 @@ export function LiveSensorTable({
       <CardHeader>
         <CardTitle>
           {title}{" "}
-          {!isFiltered ? (
+          {!isFiltered && pageIdx === 0 ? (
             <span className="chip info ml-2">
-              <span className="live-dot" /> live · top {pageSize}
+              <span className="live-dot" /> live · page 1
             </span>
           ) : (
-            <span className="chip ml-2">filtered</span>
+            <span className="chip ml-2">paged</span>
           )}
         </CardTitle>
         {showFilters ? (
@@ -305,21 +285,19 @@ export function LiveSensorTable({
         </table>
       </div>
 
-      {isFiltered ? (
-        <div className="flex items-center justify-between gap-2 px-4 py-3 border-t" style={{ borderColor: "var(--border)" }}>
-          <span className="text-xs" style={{ color: "var(--fg-muted)" }}>
-            Page {pageIdx + 1} · showing up to {pageSize} rows
-          </span>
-          <div className="flex items-center gap-2">
-            <button onClick={prevPage} disabled={pageIdx === 0 || loading} className="btn btn-sm">
-              ← Prev
-            </button>
-            <button onClick={nextPage} disabled={!nextCursor || loading} className="btn btn-sm btn-primary">
-              Next →
-            </button>
-          </div>
+      <div className="flex items-center justify-between gap-2 px-4 py-3 border-t" style={{ borderColor: "var(--border)" }}>
+        <span className="text-xs" style={{ color: "var(--fg-muted)" }}>
+          Page {pageIdx + 1} · showing up to {pageSize} rows
+        </span>
+        <div className="flex items-center gap-2">
+          <button onClick={prevPage} disabled={pageIdx === 0 || loading} className="btn btn-sm">
+            ← Prev
+          </button>
+          <button onClick={nextPage} disabled={!nextCursor || loading} className="btn btn-sm btn-primary">
+            Next →
+          </button>
         </div>
-      ) : null}
+      </div>
     </Card>
   );
 }

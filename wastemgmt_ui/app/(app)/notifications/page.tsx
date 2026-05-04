@@ -1,27 +1,23 @@
 "use client";
-import { useEffect, useState } from "react";
-import { notifications as notif, type NotificationItem } from "@/lib/api";
+import { notificationsApi, notifications as notif, type NotificationItem } from "@/lib/api";
+import { usePaginatedList } from "@/lib/usePaginatedList";
 import { Card, CardBody, CardHeader, CardTitle, Chip, EmptyState, Skeleton } from "@/components/ui/Primitives";
+import { Pagination } from "@/components/ui/Pagination";
 import { BellIcon } from "@/components/Icons";
 import { CheckIcon } from "@/components/IconsExtended";
 
+type NotifFilters = { unread?: "true" | "false" };
+
 export default function NotificationsPage(): React.ReactElement {
-  const [items, setItems] = useState<NotificationItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<"all" | "unread">("all");
+  const list = usePaginatedList<NotificationItem, NotifFilters>({
+    fetcher: (args) => notificationsApi.page(args),
+  });
 
-  const load = async () => {
-    setLoading(true);
-    try {
-      setItems(await notif.list({ unread: filter === "unread", limit: 100 }));
-    } finally { setLoading(false); }
-  };
-
-  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [filter]);
+  const isUnreadFilter = list.filters.unread === "true";
 
   const markAll = async () => {
     await notif.markRead([]);
-    setItems((arr) => arr.map((x) => ({ ...x, read: true })));
+    list.refresh();
   };
 
   return (
@@ -32,24 +28,37 @@ export default function NotificationsPage(): React.ReactElement {
           <p className="text-sm" style={{ color: "var(--fg-muted)" }}>System alerts, citizen reports, and account events.</p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => setFilter("all")} className={`btn btn-sm ${filter === "all" ? "btn-primary" : "btn-ghost"}`}>All</button>
-          <button onClick={() => setFilter("unread")} className={`btn btn-sm ${filter === "unread" ? "btn-primary" : "btn-ghost"}`}>Unread</button>
+          <button
+            onClick={() => list.setFilters({})}
+            className={`btn btn-sm ${!isUnreadFilter ? "btn-primary" : "btn-ghost"}`}
+          >
+            All
+          </button>
+          <button
+            onClick={() => list.setFilters({ unread: "true" })}
+            className={`btn btn-sm ${isUnreadFilter ? "btn-primary" : "btn-ghost"}`}
+          >
+            Unread
+          </button>
           <button onClick={markAll} className="btn btn-sm"><CheckIcon /> Mark all read</button>
         </div>
       </div>
 
       <Card>
-        <CardHeader><CardTitle>Inbox</CardTitle><span className="chip">{items.length} item{items.length === 1 ? "" : "s"}</span></CardHeader>
+        <CardHeader>
+          <CardTitle>Inbox</CardTitle>
+          <span className="chip">{list.total >= 0 ? `${list.total.toLocaleString()} item${list.total === 1 ? "" : "s"}` : "Live"}</span>
+        </CardHeader>
         <CardBody className="p-0">
-          {loading ? (
+          {list.initialLoading ? (
             <div className="p-4 space-y-2">
               {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-14 w-full" />)}
             </div>
-          ) : items.length === 0 ? (
+          ) : list.items.length === 0 ? (
             <EmptyState title="You're all caught up" hint="No notifications match this filter." icon={<BellIcon />} />
           ) : (
-            <ul className="divide-y" style={{ borderColor: "var(--border)" }}>
-              {items.map((n) => (
+            <ul className={`divide-y ${list.loading ? "opacity-70 transition" : "transition"}`} style={{ borderColor: "var(--border)" }}>
+              {list.items.map((n) => (
                 <li key={n._id} className={`px-5 py-4 ${n.read ? "" : "bg-white/[0.025]"}`}>
                   <div className="flex items-start gap-3">
                     <span
@@ -79,6 +88,14 @@ export default function NotificationsPage(): React.ReactElement {
               ))}
             </ul>
           )}
+          <Pagination
+            page={list.page}
+            pageSize={list.pageSize}
+            total={list.total}
+            loading={list.loading}
+            onPageChange={list.setPage}
+            onPageSizeChange={list.setPageSize}
+          />
         </CardBody>
       </Card>
     </div>
